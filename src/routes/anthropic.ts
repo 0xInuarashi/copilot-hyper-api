@@ -1,0 +1,117 @@
+import { Hono } from "hono";
+import {
+  translateAnthropicRequest,
+  translateAnthropicResponseBuffered,
+  AnthropicStreamMachine,
+  InvalidAnthropicRequestError,
+} from "../translate/anthropic.js";
+import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
+import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
+
+const anthropic = new Hono();
+
+function mapUpstreamErrorAnthropic(err: UpstreamError) {
+  if (err.statusCode === 402 || err.statusCode === 429) {
+    return {
+      status: 429 as const,
+      body: { type: "error", error: { type: "rate_limit_error", message: "Rate limit exceeded" } },
+    };
+  }
+  if (err.statusCode >= 500) {
+    return {
+      status: 529 as const,
+      body: { type: "error", error: { type: "overloaded_error", message: "Upstream overloaded" } },
+    };
+  }
+  return {
+    status: err.statusCode as any,
+    body: { type: "error", error: { type: "api_error", message: err.message } },
+  };
+}
+
+async function handleMessages(c: any) {
+  try {
+    const body = await c.req.json();
+
+    // Validate model
+    const models = await getModels();
+    try {
+      resolveModel(models, body.model);
+    } catch (err) {
+      if (err instanceof ModelNotFoundError) {
+        return c.json(
+          { type: "error", error: { type: "not_found_error", message: err.message } },
+          404,
+        );
+      }
+      throw err;
+    }
+
+    const { chatBody, model } = translateAnthropicRequest(body);
+
+    if (body.stream) {
+      chatBody.stream = true;
+      const machine = new AnthropicStreamMachine(model);
+      const encoder = new TextEncoder();
+
+      const readableStream = new ReadableStream({
+        async start(controller) {
+          try {
+            for await (const event of streamCopilot("/chat/completions", chatBody, c.req.raw.signal)) {
+              if (event.data === "[DONE]") break;
+              try {
+                const parsed = JSON.parse(event.data);
+                const frames = machine.processChunk(parsed);
+                for (const frame of frames) {
+                  controller.enqueue(encoder.encode(frame));
+                }
+              } catch {
+                // skip unparseable
+              }
+            }
+          } catch (err) {
+            // Stream error
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(readableStream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    }
+
+    // Non-streaming
+    const res = await copilotFetch("/chat/completions", {
+      method: "POST",
+      body: JSON.stringify(chatBody),
+    });
+    const upstream = await res.json();
+    return c.json(translateAnthropicResponseBuffered(upstream, model));
+  } catch (err: any) {
+    if (err instanceof InvalidAnthropicRequestError) {
+      return c.json(
+        { type: "error", error: { type: "invalid_request_error", message: err.message } },
+        400,
+      );
+    }
+    if (err instanceof UpstreamError) {
+      const mapped = mapUpstreamErrorAnthropic(err);
+      return c.json(mapped.body, mapped.status);
+    }
+    return c.json(
+      { type: "error", error: { type: "api_error", message: err.message ?? "Internal error" } },
+      500,
+    );
+  }
+}
+
+anthropic.post("/v1/messages", handleMessages);
+anthropic.post("/anthropic/v1/messages", handleMessages);
+
+export default anthropic;

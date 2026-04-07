@@ -1,0 +1,32 @@
+{
+  "name": "copilot-hyper-api",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "dev-debug": "LOG_LEVEL=debug bun --watch src/index.ts",
+    "dev-raw": "LOG_LEVEL=raw bun --watch src/index.ts",
+    "login": "bun run src/cli/login.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "test": "bun test",
+    "test:unit": "bun test test/unit",
+    "test:contract": "bun test test/contract",
+    "test:integration": "bun test test/integration",
+    "test:e2e": "E2E=1 bun test test/e2e"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "zod": "^3.23.0",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "^1.1.0",
+    "msw": "^2.6.0",
+    "openai": "^4.73.0",
+    "@anthropic-ai/sdk": "^0.32.0",
+    "typescript": "^5.6.0"
+  }
+}

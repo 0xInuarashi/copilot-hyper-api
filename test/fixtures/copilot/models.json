@@ -1,0 +1,55 @@
+{
+  "data": [
+    {
+      "id": "gpt-4o-2024-05-13",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "github-copilot",
+      "capabilities": {
+        "limits": {
+          "max_prompt_tokens": 128000,
+          "max_output_tokens": 4096
+        },
+        "supports": {
+          "tool_calls": true,
+          "vision": true
+        }
+      },
+      "family": "gpt-4o"
+    },
+    {
+      "id": "claude-3.5-sonnet",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "github-copilot",
+      "capabilities": {
+        "limits": {
+          "max_prompt_tokens": 200000,
+          "max_output_tokens": 8192
+        },
+        "supports": {
+          "tool_calls": true,
+          "vision": true
+        }
+      },
+      "family": "claude"
+    },
+    {
+      "id": "gpt-4",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "github-copilot",
+      "capabilities": {
+        "limits": {
+          "max_prompt_tokens": 8192,
+          "max_output_tokens": 4096
+        },
+        "supports": {
+          "tool_calls": true,
+          "vision": false
+        }
+      },
+      "family": "gpt-4"
+    }
+  ]
+}
