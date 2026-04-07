@@ -39,6 +39,12 @@ Copilot Hyper API sits between your apps and GitHub Copilot's internal API, expo
 
 All models available through your Copilot subscription work out of the box: GPT-4o, GPT-4.1, GPT-5-mini, Claude Sonnet 4.6, Claude Opus 4.6, and more.
 
+### Smart Billing
+
+The proxy mimics Copilot's session tracking headers so multi-turn agent conversations are billed as a single premium interaction — not one per turn. It detects whether a request is a user-initiated turn or an agent continuation and sets `X-Initiator` accordingly, keeping session IDs (`X-Interaction-Id`, `X-Agent-Task-Id`) stable across the conversation.
+
+When using `"model": "auto"`, the judge only runs on the first user turn. All subsequent agent turns in the same conversation reuse the cached model, saving latency and ensuring consistency.
+
 ---
 
 ## The Auto Router
@@ -263,7 +269,7 @@ src/
 │   ├── proxy-key.ts      # Inbound API key validation
 │   └── session-token.ts  # Copilot token management (auto-refresh)
 ├── auto/
-│   └── judge.ts          # Request classifier + model router
+│   └── judge.ts          # Request classifier + model router + route cache
 ├── cli/
 │   └── login.ts          # GitHub device code OAuth flow
 ├── routes/
@@ -278,9 +284,12 @@ src/
 │   └── sse.ts            # Server-sent events parser
 └── upstream/
     ├── client.ts         # Copilot HTTP client + streaming
-    ├── headers.ts        # Copilot auth headers
+    ├── headers.ts        # Session headers, initiator detection, stable IDs
     ├── models.ts         # Model list caching + fuzzy resolution
     └── openrouter.ts     # OpenRouter HTTP client + streaming
+docs/
+├── copilot-header-models.md    # Model availability: VS Code vs CLI headers
+└── copilot-header-profiles.md  # Full header diff between client profiles
 ```
 
 ---
