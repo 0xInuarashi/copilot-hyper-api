@@ -6,6 +6,7 @@ import {
   InvalidAnthropicRequestError,
 } from "../translate/anthropic.js";
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
+import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
@@ -37,6 +38,7 @@ async function handleMessages(c: any) {
 
     // Auto-route: classify request and pick model
     let ah: Record<string, string> = {};
+    let useOpenRouter = false;
     if (body.model === "auto") {
       const msgs: Array<{role: string, content: string}> = [];
       if (body.system) {
@@ -49,25 +51,30 @@ async function handleMessages(c: any) {
       }
       const jr = await judge(msgs);
       body.model = jr.routed;
+      useOpenRouter = jr.provider === "openrouter";
       ah = autoRouteHeaders(jr);
       logger.info({ event: "auto_route", route: "/v1/messages", ...ah });
     }
 
-    // Validate model
-    const models = await getModels();
-    try {
-      resolveModel(models, body.model);
-    } catch (err) {
-      if (err instanceof ModelNotFoundError) {
-        return c.json(
-          { type: "error", error: { type: "not_found_error", message: err.message } },
-          404,
-        );
+    // Validate model (skip for OpenRouter)
+    if (!useOpenRouter) {
+      const models = await getModels();
+      try {
+        resolveModel(models, body.model);
+      } catch (err) {
+        if (err instanceof ModelNotFoundError) {
+          return c.json(
+            { type: "error", error: { type: "not_found_error", message: err.message } },
+            404,
+          );
+        }
+        throw err;
       }
-      throw err;
     }
 
     const { chatBody, model } = translateAnthropicRequest(body);
+    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
+    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
 
     if (body.stream) {
       chatBody.stream = true;
@@ -77,7 +84,7 @@ async function handleMessages(c: any) {
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
-            for await (const event of streamCopilot("/chat/completions", chatBody, c.req.raw.signal)) {
+            for await (const event of doStream("/chat/completions", chatBody, c.req.raw.signal)) {
               if (event.data === "[DONE]") break;
               try {
                 const parsed = JSON.parse(event.data);
@@ -108,7 +115,7 @@ async function handleMessages(c: any) {
     }
 
     // Non-streaming
-    const res = await copilotFetch("/chat/completions", {
+    const res = await doFetch("/chat/completions", {
       method: "POST",
       body: JSON.stringify(chatBody),
     });

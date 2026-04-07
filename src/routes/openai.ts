@@ -8,6 +8,7 @@ import {
   InvalidResponsesRequestError,
 } from "../translate/openai-responses.js";
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
+import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { formatSSE } from "../translate/sse.js";
 import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
@@ -32,29 +33,35 @@ openai.post("/v1/chat/completions", async (c) => {
 
     // Auto-route: classify request and pick model
     let ah: Record<string, string> = {};
+    let useOpenRouter = false;
     if (body.model === "auto") {
       const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
       const jr = await judge(msgs);
       body.model = jr.routed;
+      useOpenRouter = jr.provider === "openrouter";
       ah = autoRouteHeaders(jr);
       logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
     }
 
-    // Validate model
-    const models = await getModels();
-    try {
-      resolveModel(models, body.model);
-    } catch (err) {
-      if (err instanceof ModelNotFoundError) {
-        return c.json(
-          { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
-          404,
-        );
+    // Validate model (skip for OpenRouter — not in Copilot's model list)
+    if (!useOpenRouter) {
+      const models = await getModels();
+      try {
+        resolveModel(models, body.model);
+      } catch (err) {
+        if (err instanceof ModelNotFoundError) {
+          return c.json(
+            { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
+            404,
+          );
+        }
+        throw err;
       }
-      throw err;
     }
 
     const chatReq = translateChatRequest(body);
+    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
+    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
 
     if (chatReq.stream) {
       // Streaming response
@@ -62,7 +69,7 @@ openai.post("/v1/chat/completions", async (c) => {
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
-            for await (const event of streamCopilot("/chat/completions", chatReq, c.req.raw.signal)) {
+            for await (const event of doStream("/chat/completions", chatReq, c.req.raw.signal)) {
               if (event.data === "[DONE]") {
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 break;
@@ -88,7 +95,7 @@ openai.post("/v1/chat/completions", async (c) => {
     }
 
     // Non-streaming
-    const res = await copilotFetch("/chat/completions", {
+    const res = await doFetch("/chat/completions", {
       method: "POST",
       body: JSON.stringify(chatReq),
     });
@@ -114,6 +121,7 @@ openai.post("/v1/responses", async (c) => {
 
     // Auto-route: classify request and pick model
     let ah: Record<string, string> = {};
+    let useOpenRouter = false;
     if (body.model === "auto") {
       const msgs: Array<{role: string, content: string}> = [];
       if (body.instructions) msgs.push({ role: "system", content: body.instructions });
@@ -126,25 +134,30 @@ openai.post("/v1/responses", async (c) => {
       }
       const jr = await judge(msgs);
       body.model = jr.routed;
+      useOpenRouter = jr.provider === "openrouter";
       ah = autoRouteHeaders(jr);
       logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
     }
 
-    // Validate model
-    const models = await getModels();
-    try {
-      resolveModel(models, body.model);
-    } catch (err) {
-      if (err instanceof ModelNotFoundError) {
-        return c.json(
-          { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
-          404,
-        );
+    // Validate model (skip for OpenRouter)
+    if (!useOpenRouter) {
+      const models = await getModels();
+      try {
+        resolveModel(models, body.model);
+      } catch (err) {
+        if (err instanceof ModelNotFoundError) {
+          return c.json(
+            { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
+            404,
+          );
+        }
+        throw err;
       }
-      throw err;
     }
 
     const { chatBody, model } = translateResponsesRequest(body);
+    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
+    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
 
     if (body.stream) {
       chatBody.stream = true;
@@ -154,7 +167,7 @@ openai.post("/v1/responses", async (c) => {
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
-            for await (const event of streamCopilot("/chat/completions", chatBody, c.req.raw.signal)) {
+            for await (const event of doStream("/chat/completions", chatBody, c.req.raw.signal)) {
               if (event.data === "[DONE]") break;
               try {
                 const parsed = JSON.parse(event.data);
@@ -185,7 +198,7 @@ openai.post("/v1/responses", async (c) => {
     }
 
     // Non-streaming
-    const res = await copilotFetch("/chat/completions", {
+    const res = await doFetch("/chat/completions", {
       method: "POST",
       body: JSON.stringify(chatBody),
     });

@@ -1,7 +1,9 @@
 import { copilotFetch } from "../upstream/client.js";
+import { getConfig } from "../config.js";
 
 export type Complexity = "low" | "hard" | "extreme";
 export type ExpectedLength = "short" | "long";
+export type Provider = "copilot" | "openrouter";
 
 export interface JudgeResult {
   complexity: Complexity;
@@ -11,6 +13,7 @@ export interface JudgeResult {
   model: string;
   latencyMs: number;
   routed: string;
+  provider: Provider;
 }
 
 const JUDGE_MODEL = "gpt-4o";
@@ -72,6 +75,7 @@ export async function judge(messages: Array<{ role: string; content: string }>, 
     const parsed = JSON.parse(raw.trim());
     const complexity = validateComplexity(parsed.complexity);
     const expectedLength = validateLength(parsed.expectedLength);
+    const route = routeModel(complexity, expectedLength);
     return {
       complexity,
       expectedLength,
@@ -79,7 +83,8 @@ export async function judge(messages: Array<{ role: string; content: string }>, 
       reasoning: parsed.reasoning ?? "",
       model: useModel,
       latencyMs,
-      routed: routeModel(complexity, expectedLength),
+      routed: route.model,
+      provider: route.provider,
     };
   } catch {
     const lower = raw.toLowerCase();
@@ -87,6 +92,7 @@ export async function judge(messages: Array<{ role: string; content: string }>, 
     if (lower.includes('"extreme"') || lower.includes("extreme")) complexity = "extreme";
     else if (lower.includes('"hard"') || lower.includes("hard")) complexity = "hard";
     const expectedLength: ExpectedLength = lower.includes('"long"') ? "long" : "short";
+    const route = routeModel(complexity, expectedLength);
 
     return {
       complexity,
@@ -95,7 +101,8 @@ export async function judge(messages: Array<{ role: string; content: string }>, 
       reasoning: `Parse fallback from raw: ${raw.slice(0, 100)}`,
       model: useModel,
       latencyMs,
-      routed: routeModel(complexity, expectedLength),
+      routed: route.model,
+      provider: route.provider,
     };
   }
 }
@@ -112,20 +119,27 @@ function validateLength(val: unknown): ExpectedLength {
 
 /**
  * Routing logic — maximize free tier usage:
- *   low + any length           → oswe-vscode-prime (free — Raptor Mini, optimized for code)
- *   hard + short               → oswe-vscode-prime (free — complex but focused output)
+ *   low + any length           → free tier (Raptor Mini or OpenRouter)
+ *   hard + short               → free tier (Raptor Mini or OpenRouter)
  *   hard + long                → claude-sonnet-4.6 (paid — multi-part needs quality)
  *   extreme + short            → claude-sonnet-4.6 (paid — deep but focused)
  *   extreme + long             → claude-opus-4.6   (premium — only when truly needed)
  */
-export function routeModel(complexity: Complexity, expectedLength: ExpectedLength): string {
-  if (complexity === "low") return "oswe-vscode-prime";
-  if (complexity === "hard") {
-    return expectedLength === "short" ? "oswe-vscode-prime" : "claude-sonnet-4.6";
+export function routeModel(complexity: Complexity, expectedLength: ExpectedLength): { model: string; provider: Provider } {
+  const isFree = complexity === "low" || (complexity === "hard" && expectedLength === "short");
+
+  if (isFree) {
+    const config = getConfig();
+    if (config.OPENROUTER_ENABLED && config.OPENROUTER_API_KEY && config.OPENROUTER_MODEL) {
+      return { model: config.OPENROUTER_MODEL, provider: "openrouter" };
+    }
+    return { model: "oswe-vscode-prime", provider: "copilot" };
   }
+
+  if (complexity === "hard") return { model: "claude-sonnet-4.6", provider: "copilot" };
   // extreme
-  if (expectedLength === "short") return "claude-sonnet-4.6";
-  return "claude-opus-4.6";
+  if (expectedLength === "short") return { model: "claude-sonnet-4.6", provider: "copilot" };
+  return { model: "claude-opus-4.6", provider: "copilot" };
 }
 
 export const MODEL_TIERS = {
@@ -146,6 +160,7 @@ export function autoRouteHeaders(jr: JudgeResult): Record<string, string> {
   return {
     "x-auto-routed": "true",
     "x-auto-model": jr.routed,
+    "x-auto-provider": jr.provider,
     "x-auto-complexity": jr.complexity,
     "x-auto-length": jr.expectedLength,
     "x-auto-confidence": jr.confidence.toFixed(2),

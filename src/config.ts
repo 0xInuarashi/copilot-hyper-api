@@ -11,6 +11,9 @@ const configSchema = z.object({
   MODEL_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(900),
   SESSION_TOKEN_SAFETY_WINDOW_SECONDS: z.coerce.number().int().min(0).default(120),
   ALLOWED_ORIGINS: z.string().default(""),
+  OPENROUTER_ENABLED: z.coerce.boolean().default(false),
+  OPENROUTER_API_KEY: z.string().default(""),
+  OPENROUTER_MODEL: z.string().default(""),
 });
 
 export type Config = z.infer<typeof configSchema>;
