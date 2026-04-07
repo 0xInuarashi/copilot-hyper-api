@@ -463,6 +463,8 @@ export const cases: TestCase[] = [
     messages: u("Our CDN serves stale content after deploys. Cache busting via file hashing vs CDN invalidation API vs versioned URLs? Tradeoffs for a React SPA.") },
   { bucket: "extr+S", name: "NUMA-aware design", expectedC: "extreme", expectedL: "short", expectedRoute: r("extreme","short"),
     messages: u("Our in-memory database runs on a 2-socket NUMA system and we see 30% perf degradation from remote memory access. Analyze NUMA-aware allocation strategies. Recommendation only.") },
+  { bucket: "extr+S", name: "snapshot isolation", expectedC: "extreme", expectedL: "short", expectedRoute: r("extreme","short"),
+    messages: u("Our MVCC implementation has write skew anomalies under snapshot isolation. Analyze: serializable snapshot isolation vs predicate locking vs materializing conflicts. Which approach for a high-contention OLTP workload?") },
 ];
 
 if (cases.length !== 200) {

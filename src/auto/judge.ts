@@ -129,9 +129,13 @@ export function routeModel(complexity: Complexity, expectedLength: ExpectedLengt
   const isFree = complexity === "low" || (complexity === "hard" && expectedLength === "short");
 
   if (isFree) {
-    const config = getConfig();
-    if (config.OPENROUTER_ENABLED && config.OPENROUTER_API_KEY && config.OPENROUTER_MODEL) {
-      return { model: config.OPENROUTER_MODEL, provider: "openrouter" };
+    try {
+      const config = getConfig();
+      if (config.OPENROUTER_ENABLED && config.OPENROUTER_API_KEY && config.OPENROUTER_MODEL) {
+        return { model: config.OPENROUTER_MODEL, provider: "openrouter" };
+      }
+    } catch {
+      // Config not loaded yet (e.g. during benchmark case initialization)
     }
     return { model: "oswe-vscode-prime", provider: "copilot" };
   }
