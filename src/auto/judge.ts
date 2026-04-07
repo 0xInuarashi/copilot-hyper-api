@@ -159,6 +159,24 @@ export function textOf(content: unknown): string {
   return String(content ?? "");
 }
 
+/** Cache of routed models per conversation (keyed by interactionId). */
+const routeCache = new Map<string, { model: string; provider: Provider; ah: Record<string, string> }>();
+
+/** Look up a previously routed model for this conversation. */
+export function getCachedRoute(interactionId: string): { model: string; provider: Provider; ah: Record<string, string> } | undefined {
+  return routeCache.get(interactionId);
+}
+
+/** Store a routed model for this conversation. */
+export function setCachedRoute(interactionId: string, jr: JudgeResult): void {
+  routeCache.set(interactionId, { model: jr.routed, provider: jr.provider, ah: autoRouteHeaders(jr) });
+  // Evict old entries to prevent unbounded growth
+  if (routeCache.size > 10000) {
+    const oldest = routeCache.keys().next().value!;
+    routeCache.delete(oldest);
+  }
+}
+
 /** Build response headers for auto-routed requests */
 export function autoRouteHeaders(jr: JudgeResult): Record<string, string> {
   return {

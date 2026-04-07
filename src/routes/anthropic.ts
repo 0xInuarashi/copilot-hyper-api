@@ -9,7 +9,7 @@ import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.j
 import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
-import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
+import { judge, autoRouteHeaders, textOf, getCachedRoute, setCachedRoute, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
 
 const anthropic = new Hono();
@@ -53,24 +53,36 @@ async function handleMessages(c: any) {
   try {
     const body = await c.req.json();
 
-    // Auto-route: classify request and pick model
+    const initiator = detectInitiatorAnthropic(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+
+    // Auto-route: judge on user turns, reuse cached model on agent turns
     let ah: Record<string, string> = {};
     let useOpenRouter = false;
     if (body.model === "auto") {
-      const msgs: Array<{role: string, content: string}> = [];
-      if (body.system) {
-        const sys = typeof body.system === "string" ? body.system :
-          Array.isArray(body.system) ? body.system.map((b: any) => typeof b === "string" ? b : b.text ?? "").join("\n\n") : "";
-        if (sys) msgs.push({ role: "system", content: sys });
+      const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
+      if (cached) {
+        body.model = cached.model;
+        useOpenRouter = cached.provider === "openrouter";
+        ah = { ...cached.ah, "x-auto-cached": "true" };
+        logger.info({ event: "auto_route_cached", route: "/v1/messages", model: cached.model });
+      } else {
+        const msgs: Array<{role: string, content: string}> = [];
+        if (body.system) {
+          const sys = typeof body.system === "string" ? body.system :
+            Array.isArray(body.system) ? body.system.map((b: any) => typeof b === "string" ? b : b.text ?? "").join("\n\n") : "";
+          if (sys) msgs.push({ role: "system", content: sys });
+        }
+        for (const msg of body.messages ?? []) {
+          msgs.push({ role: msg.role ?? "user", content: textOf(msg.content) });
+        }
+        const jr = await judge(msgs);
+        body.model = jr.routed;
+        useOpenRouter = jr.provider === "openrouter";
+        ah = autoRouteHeaders(jr);
+        setCachedRoute(interactionId, jr);
+        logger.info({ event: "auto_route", route: "/v1/messages", ...ah });
       }
-      for (const msg of body.messages ?? []) {
-        msgs.push({ role: msg.role ?? "user", content: textOf(msg.content) });
-      }
-      const jr = await judge(msgs);
-      body.model = jr.routed;
-      useOpenRouter = jr.provider === "openrouter";
-      ah = autoRouteHeaders(jr);
-      logger.info({ event: "auto_route", route: "/v1/messages", ...ah });
     }
 
     // Validate model (skip for OpenRouter)
@@ -90,8 +102,6 @@ async function handleMessages(c: any) {
     }
 
     const { chatBody, model } = translateAnthropicRequest(body);
-    const initiator = detectInitiatorAnthropic(body.messages);
-    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
     const turns = countTurnsAnthropic(body.messages);
     logger.info({ event: "interaction", route: "/v1/messages", initiator, turns, model: body.model });
 

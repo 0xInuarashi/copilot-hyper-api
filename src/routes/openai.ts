@@ -12,7 +12,7 @@ import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { formatSSE } from "../translate/sse.js";
-import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
+import { judge, autoRouteHeaders, textOf, getCachedRoute, setCachedRoute, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
 
 const openai = new Hono();
@@ -48,16 +48,28 @@ openai.post("/v1/chat/completions", async (c) => {
   try {
     const body = await c.req.json();
 
-    // Auto-route: classify request and pick model
+    const initiator = detectInitiatorChat(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+
+    // Auto-route: judge on user turns, reuse cached model on agent turns
     let ah: Record<string, string> = {};
     let useOpenRouter = false;
     if (body.model === "auto") {
-      const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
-      const jr = await judge(msgs);
-      body.model = jr.routed;
-      useOpenRouter = jr.provider === "openrouter";
-      ah = autoRouteHeaders(jr);
-      logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
+      const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
+      if (cached) {
+        body.model = cached.model;
+        useOpenRouter = cached.provider === "openrouter";
+        ah = { ...cached.ah, "x-auto-cached": "true" };
+        logger.info({ event: "auto_route_cached", route: "/v1/chat/completions", model: cached.model });
+      } else {
+        const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
+        const jr = await judge(msgs);
+        body.model = jr.routed;
+        useOpenRouter = jr.provider === "openrouter";
+        ah = autoRouteHeaders(jr);
+        setCachedRoute(interactionId, jr);
+        logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
+      }
     }
 
     // Validate model (skip for OpenRouter — not in Copilot's model list)
@@ -77,8 +89,6 @@ openai.post("/v1/chat/completions", async (c) => {
     }
 
     const chatReq = translateChatRequest(body);
-    const initiator = detectInitiatorChat(body.messages);
-    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
     const turns = countTurns(body.messages);
     logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model });
 
@@ -145,24 +155,37 @@ openai.post("/v1/responses", async (c) => {
   try {
     const body = await c.req.json();
 
-    // Auto-route: classify request and pick model
+    const initiator = detectInitiatorResponses(body.input);
+    const chatMessages = Array.isArray(body.input) ? body.input : [];
+    const { interactionId, agentTaskId } = deriveSessionIds(chatMessages);
+
+    // Auto-route: judge on user turns, reuse cached model on agent turns
     let ah: Record<string, string> = {};
     let useOpenRouter = false;
     if (body.model === "auto") {
-      const msgs: Array<{role: string, content: string}> = [];
-      if (body.instructions) msgs.push({ role: "system", content: body.instructions });
-      if (typeof body.input === "string") {
-        msgs.push({ role: "user", content: body.input });
-      } else if (Array.isArray(body.input)) {
-        for (const item of body.input) {
-          msgs.push({ role: item.role ?? "user", content: textOf(item.content ?? item.text ?? item) });
+      const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
+      if (cached) {
+        body.model = cached.model;
+        useOpenRouter = cached.provider === "openrouter";
+        ah = { ...cached.ah, "x-auto-cached": "true" };
+        logger.info({ event: "auto_route_cached", route: "/v1/responses", model: cached.model });
+      } else {
+        const msgs: Array<{role: string, content: string}> = [];
+        if (body.instructions) msgs.push({ role: "system", content: body.instructions });
+        if (typeof body.input === "string") {
+          msgs.push({ role: "user", content: body.input });
+        } else if (Array.isArray(body.input)) {
+          for (const item of body.input) {
+            msgs.push({ role: item.role ?? "user", content: textOf(item.content ?? item.text ?? item) });
+          }
         }
+        const jr = await judge(msgs);
+        body.model = jr.routed;
+        useOpenRouter = jr.provider === "openrouter";
+        ah = autoRouteHeaders(jr);
+        setCachedRoute(interactionId, jr);
+        logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
       }
-      const jr = await judge(msgs);
-      body.model = jr.routed;
-      useOpenRouter = jr.provider === "openrouter";
-      ah = autoRouteHeaders(jr);
-      logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
     }
 
     // Validate model (skip for OpenRouter)
@@ -182,9 +205,6 @@ openai.post("/v1/responses", async (c) => {
     }
 
     const { chatBody, model } = translateResponsesRequest(body);
-    const initiator = detectInitiatorResponses(body.input);
-    const chatMessages = Array.isArray(body.input) ? body.input : [];
-    const { interactionId, agentTaskId } = deriveSessionIds(chatMessages);
     const turns = chatMessages.filter((i: any) => i.role === "assistant" || ["function_call_output", "tool_call_output", "computer_call_output"].includes(i.type)).length;
     logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model });
 
