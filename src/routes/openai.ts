@@ -10,6 +10,8 @@ import {
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { formatSSE } from "../translate/sse.js";
+import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
+import { logger } from "../logger.js";
 
 const openai = new Hono();
 
@@ -27,6 +29,16 @@ function mapUpstreamError(err: UpstreamError) {
 openai.post("/v1/chat/completions", async (c) => {
   try {
     const body = await c.req.json();
+
+    // Auto-route: classify request and pick model
+    let ah: Record<string, string> = {};
+    if (body.model === "auto") {
+      const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
+      const jr = await judge(msgs);
+      body.model = jr.routed;
+      ah = autoRouteHeaders(jr);
+      logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
+    }
 
     // Validate model
     const models = await getModels();
@@ -70,6 +82,7 @@ openai.post("/v1/chat/completions", async (c) => {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          ...ah,
         },
       });
     }
@@ -80,6 +93,7 @@ openai.post("/v1/chat/completions", async (c) => {
       body: JSON.stringify(chatReq),
     });
     const upstream = await res.json();
+    for (const [k, v] of Object.entries(ah)) c.header(k, v);
     return c.json(translateChatResponse(upstream));
   } catch (err: any) {
     if (err instanceof InvalidChatRequestError) {
@@ -97,6 +111,24 @@ openai.post("/v1/chat/completions", async (c) => {
 openai.post("/v1/responses", async (c) => {
   try {
     const body = await c.req.json();
+
+    // Auto-route: classify request and pick model
+    let ah: Record<string, string> = {};
+    if (body.model === "auto") {
+      const msgs: Array<{role: string, content: string}> = [];
+      if (body.instructions) msgs.push({ role: "system", content: body.instructions });
+      if (typeof body.input === "string") {
+        msgs.push({ role: "user", content: body.input });
+      } else if (Array.isArray(body.input)) {
+        for (const item of body.input) {
+          msgs.push({ role: item.role ?? "user", content: textOf(item.content ?? item.text ?? item) });
+        }
+      }
+      const jr = await judge(msgs);
+      body.model = jr.routed;
+      ah = autoRouteHeaders(jr);
+      logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
+    }
 
     // Validate model
     const models = await getModels();
@@ -147,6 +179,7 @@ openai.post("/v1/responses", async (c) => {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          ...ah,
         },
       });
     }
@@ -157,6 +190,7 @@ openai.post("/v1/responses", async (c) => {
       body: JSON.stringify(chatBody),
     });
     const upstream = await res.json();
+    for (const [k, v] of Object.entries(ah)) c.header(k, v);
     return c.json(translateResponsesBuffered(upstream, model));
   } catch (err: any) {
     if (err instanceof InvalidResponsesRequestError) {

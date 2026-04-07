@@ -233,7 +233,9 @@ describe("Integration: Models endpoints", () => {
     expect(body.data).toBeArray();
     expect(body.data.length).toBeGreaterThan(0);
     expect(body.data[0].object).toBe("model");
-    expect(body.data[0].owned_by).toBe("github-copilot");
+    // First model is "auto" (owned by copilot-hyper-api), rest are github-copilot
+    expect(body.data[0].id).toBe("auto");
+    expect(body.data.some((m: any) => m.owned_by === "github-copilot")).toBe(true);
   });
 
   test("GET /anthropic/v1/models → Anthropic format", async () => {

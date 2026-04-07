@@ -14,7 +14,13 @@
     "test:unit": "bun test test/unit",
     "test:contract": "bun test test/contract",
     "test:integration": "bun test test/integration",
-    "test:e2e": "E2E=1 bun test test/e2e"
+    "test:e2e": "E2E=1 bun test test/e2e",
+    "bench:judge": "bun run bench/judge-benchmark.ts",
+    "bench:compare": "bun run bench/judge-compare.ts",
+    "bench:length": "bun run bench/judge-length.ts",
+    "bench:length-compare": "bun run bench/judge-length-compare.ts",
+    "bench:full": "bun run bench/judge-full-compare.ts",
+    "bench:complexity-only": "bun run bench/judge-complexity-only.ts"
   },
   "dependencies": {
     "hono": "^4.6.0",

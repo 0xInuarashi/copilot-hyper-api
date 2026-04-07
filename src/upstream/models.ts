@@ -136,29 +136,44 @@ export function resolveModel(models: NormalizedModel[], requestedModel: string):
   throw new ModelNotFoundError(requestedModel, suggestions);
 }
 
+const AUTO_MODEL = {
+  id: "auto",
+  object: "model",
+  created: Math.floor(Date.now() / 1000),
+  owned_by: "copilot-hyper-api",
+};
+
 export function getOpenAIModelList(models: NormalizedModel[]) {
   return {
     object: "list",
-    data: models.map((m) => ({
-      id: m.id,
-      object: "model",
-      created: Math.floor(Date.now() / 1000),
-      owned_by: "github-copilot",
-    })),
+    data: [
+      AUTO_MODEL,
+      ...models.map((m) => ({
+        id: m.id,
+        object: "model",
+        created: Math.floor(Date.now() / 1000),
+        owned_by: "github-copilot",
+      })),
+    ],
   };
 }
 
 export function getAnthropicModelList(models: NormalizedModel[]) {
-  return {
-    data: models.map((m) => ({
+  const autoEntry = { id: "auto", display_name: "auto", type: "model", created_at: new Date().toISOString() };
+  const data = [
+    autoEntry,
+    ...models.map((m) => ({
       id: m.id,
       display_name: m.id,
       type: "model",
       created_at: new Date().toISOString(),
     })),
+  ];
+  return {
+    data,
     has_more: false,
-    first_id: models[0]?.id,
-    last_id: models[models.length - 1]?.id,
+    first_id: data[0]?.id,
+    last_id: data[data.length - 1]?.id,
   };
 }
 

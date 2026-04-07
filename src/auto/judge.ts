@@ -1,0 +1,154 @@
+import { copilotFetch } from "../upstream/client.js";
+
+export type Complexity = "low" | "hard" | "extreme";
+export type ExpectedLength = "short" | "long";
+
+export interface JudgeResult {
+  complexity: Complexity;
+  expectedLength: ExpectedLength;
+  confidence: number;
+  reasoning: string;
+  model: string;
+  latencyMs: number;
+  routed: string;
+}
+
+const JUDGE_MODEL = "gpt-4o";
+
+const SYSTEM_PROMPT = `You are a request complexity and length classifier. Given a user prompt, classify it on TWO dimensions:
+
+**COMPLEXITY** — one of three tiers:
+- **low**: Most everyday requests. Factual questions, translations, math, lookups, greetings, writing a function, explaining a concept, debugging an error, comparisons, writing a class, SQL queries, regex, config help, short code generation, summaries. Anything a competent developer could answer quickly or that produces a focused, bounded output. This is the DEFAULT tier — most requests belong here.
+- **hard**: Tasks requiring sustained multi-step reasoning across multiple domains, or generating substantial interconnected code (multiple files/modules that must work together). Examples: designing a service with multiple components, implementing a full feature with tests and error handling, multi-file refactors, writing a complete CLI tool, building an API with multiple endpoints. The key differentiator: the answer has MULTIPLE INTERDEPENDENT PARTS that must be consistent with each other.
+- **extreme**: Architect-level tasks demanding deep expertise. Full system designs (distributed systems, entire application architectures), comprehensive security/performance audits, research-grade analysis comparing multiple complex systems with code, building compilers/interpreters, designing database schemas with migrations + ORM + RLS + audit trails, end-to-end ML pipelines. These are tasks where even a senior engineer would need significant time to produce a quality answer.
+
+**EXPECTED LENGTH** — how long a quality response would be:
+- **short**: The good answer is focused and concise. Under ~800 words or ~100 lines of code. Even complex reasoning can be short if the output is a focused recommendation, a single algorithm, a targeted fix, or a concise analysis.
+- **long**: The good answer requires extensive output. Over ~800 words or ~100 lines of code. Multiple sections, many code files, comprehensive coverage, detailed step-by-step with code for each step.
+
+The threshold for complexity is HIGH — when in doubt, classify as **low**.
+Length is about the EXPECTED OUTPUT, not the input prompt length.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"complexity": "low"|"hard"|"extreme", "expectedLength": "short"|"long", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`;
+
+export async function judge(messages: Array<{ role: string; content: string }>, modelOverride?: string): Promise<JudgeResult> {
+  const userContent = messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content)
+    .join("\n\n");
+
+  const systemMessages = messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n\n");
+
+  const promptToClassify = systemMessages
+    ? `[System context]: ${systemMessages}\n\n[User request]: ${userContent}`
+    : userContent;
+
+  const start = performance.now();
+  const useModel = modelOverride ?? JUDGE_MODEL;
+
+  const res = await copilotFetch("/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({
+      model: useModel,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Classify this request:\n\n${promptToClassify}` },
+      ],
+      max_tokens: 200,
+      temperature: 0,
+      n: 1,
+    }),
+  });
+
+  const latencyMs = Math.round(performance.now() - start);
+  const data = (await res.json()) as any;
+  const raw = data.choices?.[0]?.message?.content ?? "";
+
+  try {
+    const parsed = JSON.parse(raw.trim());
+    const complexity = validateComplexity(parsed.complexity);
+    const expectedLength = validateLength(parsed.expectedLength);
+    return {
+      complexity,
+      expectedLength,
+      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
+      reasoning: parsed.reasoning ?? "",
+      model: useModel,
+      latencyMs,
+      routed: routeModel(complexity, expectedLength),
+    };
+  } catch {
+    const lower = raw.toLowerCase();
+    let complexity: Complexity = "low";
+    if (lower.includes('"extreme"') || lower.includes("extreme")) complexity = "extreme";
+    else if (lower.includes('"hard"') || lower.includes("hard")) complexity = "hard";
+    const expectedLength: ExpectedLength = lower.includes('"long"') ? "long" : "short";
+
+    return {
+      complexity,
+      expectedLength,
+      confidence: 0.3,
+      reasoning: `Parse fallback from raw: ${raw.slice(0, 100)}`,
+      model: useModel,
+      latencyMs,
+      routed: routeModel(complexity, expectedLength),
+    };
+  }
+}
+
+function validateComplexity(val: unknown): Complexity {
+  if (val === "low" || val === "hard" || val === "extreme") return val;
+  return "low";
+}
+
+function validateLength(val: unknown): ExpectedLength {
+  if (val === "short" || val === "long") return val;
+  return "short";
+}
+
+/**
+ * Routing logic — maximize free tier usage:
+ *   low + any length           → oswe-vscode-prime (free — Raptor Mini, optimized for code)
+ *   hard + short               → oswe-vscode-prime (free — complex but focused output)
+ *   hard + long                → claude-sonnet-4.6 (paid — multi-part needs quality)
+ *   extreme + short            → claude-sonnet-4.6 (paid — deep but focused)
+ *   extreme + long             → claude-opus-4.6   (premium — only when truly needed)
+ */
+export function routeModel(complexity: Complexity, expectedLength: ExpectedLength): string {
+  if (complexity === "low") return "oswe-vscode-prime";
+  if (complexity === "hard") {
+    return expectedLength === "short" ? "oswe-vscode-prime" : "claude-sonnet-4.6";
+  }
+  // extreme
+  if (expectedLength === "short") return "claude-sonnet-4.6";
+  return "claude-opus-4.6";
+}
+
+export const MODEL_TIERS = {
+  free: "oswe-vscode-prime",
+  paid: "claude-sonnet-4.6",
+  premium: "claude-opus-4.6",
+} as const;
+
+/** Flatten any content format (string, content parts array) to plain text */
+export function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((p: any) => p.text ?? "").filter(Boolean).join("\n");
+  return String(content ?? "");
+}
+
+/** Build response headers for auto-routed requests */
+export function autoRouteHeaders(jr: JudgeResult): Record<string, string> {
+  return {
+    "x-auto-routed": "true",
+    "x-auto-model": jr.routed,
+    "x-auto-complexity": jr.complexity,
+    "x-auto-length": jr.expectedLength,
+    "x-auto-confidence": jr.confidence.toFixed(2),
+    "x-auto-latency-ms": jr.latencyMs.toString(),
+  };
+}

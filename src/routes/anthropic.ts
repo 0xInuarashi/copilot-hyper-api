@@ -7,6 +7,8 @@ import {
 } from "../translate/anthropic.js";
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
+import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
+import { logger } from "../logger.js";
 
 const anthropic = new Hono();
 
@@ -32,6 +34,24 @@ function mapUpstreamErrorAnthropic(err: UpstreamError) {
 async function handleMessages(c: any) {
   try {
     const body = await c.req.json();
+
+    // Auto-route: classify request and pick model
+    let ah: Record<string, string> = {};
+    if (body.model === "auto") {
+      const msgs: Array<{role: string, content: string}> = [];
+      if (body.system) {
+        const sys = typeof body.system === "string" ? body.system :
+          Array.isArray(body.system) ? body.system.map((b: any) => typeof b === "string" ? b : b.text ?? "").join("\n\n") : "";
+        if (sys) msgs.push({ role: "system", content: sys });
+      }
+      for (const msg of body.messages ?? []) {
+        msgs.push({ role: msg.role ?? "user", content: textOf(msg.content) });
+      }
+      const jr = await judge(msgs);
+      body.model = jr.routed;
+      ah = autoRouteHeaders(jr);
+      logger.info({ event: "auto_route", route: "/v1/messages", ...ah });
+    }
 
     // Validate model
     const models = await getModels();
@@ -82,6 +102,7 @@ async function handleMessages(c: any) {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          ...ah,
         },
       });
     }
@@ -92,6 +113,7 @@ async function handleMessages(c: any) {
       body: JSON.stringify(chatBody),
     });
     const upstream = await res.json();
+    for (const [k, v] of Object.entries(ah)) c.header(k, v);
     return c.json(translateAnthropicResponseBuffered(upstream, model));
   } catch (err: any) {
     if (err instanceof InvalidAnthropicRequestError) {
