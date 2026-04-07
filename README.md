@@ -15,11 +15,11 @@ bun run login
 bun run start
 ```
 
-That's it. Your API is live at `http://localhost:8787`.
+That's it. Your API is live at `http://localhost:8080`.
 
 ```bash
 # Test it
-curl http://localhost:8787/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer <your-proxy-key>" \
   -H "Content-Type: application/json" \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "Hello!"}]}'
@@ -93,7 +93,7 @@ PROXY_API_KEY=sk-your-secret-key        # Your API key for authenticating to thi
 GITHUB_OAUTH_TOKEN=ghu_xxxxx            # From `bun run login`
 
 # Optional
-PORT=8787                                # Server port
+PORT=8080                                # Server port
 LOG_LEVEL=info                           # raw | debug | info | warn | error
 
 # OpenRouter override (replaces free tier with any OpenRouter model)

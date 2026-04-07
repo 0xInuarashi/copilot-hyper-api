@@ -6,7 +6,7 @@ const configSchema = z.object({
   COPILOT_CLIENT_ID: z.string().default("Iv1.b507a08c87ecfe98"),
   COPILOT_EDITOR_VERSION: z.string().default("vscode/1.95.0"),
   COPILOT_INTEGRATION_ID: z.string().default("vscode-chat"),
-  PORT: z.coerce.number().int().min(1).max(65535).default(8787),
+  PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   LOG_LEVEL: z.enum(["raw", "debug", "info", "warn", "error"]).default("info"),
   MODEL_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(900),
   SESSION_TOKEN_SAFETY_WINDOW_SECONDS: z.coerce.number().int().min(0).default(120),
