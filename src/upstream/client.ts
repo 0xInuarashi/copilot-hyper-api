@@ -1,7 +1,7 @@
 import { getConfig } from "../config.js";
 import { logger, isDebug, isRaw, sanitizeHeaders } from "../logger.js";
 import { getSessionToken, invalidateSessionToken } from "../auth/session-token.js";
-import { getCopilotHeaders } from "./headers.js";
+import { getCopilotHeaders, type Initiator } from "./headers.js";
 import { parseSSE, type SSEEvent } from "../translate/sse.js";
 
 export class UpstreamError extends Error {
@@ -28,9 +28,12 @@ export async function copilotFetch(
   path: string,
   init: RequestInit = {},
   retryOn401 = true,
+  initiator: Initiator = "user",
+  interactionId?: string,
+  agentTaskId?: string,
 ): Promise<Response> {
   const { token, apiBase } = await getTokenAndBase();
-  const headers = getCopilotHeaders(token);
+  const headers = getCopilotHeaders(token, initiator, interactionId, agentTaskId);
 
   const url = `${apiBase}${path}`;
   const mergedHeaders = {
@@ -70,7 +73,7 @@ export async function copilotFetch(
     const config = getConfig();
     logger.debug({ event: "session_token_invalidate", reason: "upstream 401" });
     invalidateSessionToken(config.GITHUB_OAUTH_TOKEN);
-    return copilotFetch(path, init, false);
+    return copilotFetch(path, init, false, initiator, interactionId, agentTaskId);
   }
 
   if (!res.ok && res.status !== 401) {
@@ -94,9 +97,12 @@ export async function* streamCopilot(
   path: string,
   body: unknown,
   signal?: AbortSignal,
+  initiator: Initiator = "user",
+  interactionId?: string,
+  agentTaskId?: string,
 ): AsyncIterable<SSEEvent> {
   const { token, apiBase } = await getTokenAndBase();
-  const headers = getCopilotHeaders(token);
+  const headers = getCopilotHeaders(token, initiator, interactionId, agentTaskId);
 
   const url = `${apiBase}${path}`;
   const bodyStr = JSON.stringify(body);

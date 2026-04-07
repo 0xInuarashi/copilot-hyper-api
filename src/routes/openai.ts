@@ -9,6 +9,7 @@ import {
 } from "../translate/openai-responses.js";
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
 import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
+import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { formatSSE } from "../translate/sse.js";
 import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
@@ -24,6 +25,22 @@ function mapUpstreamError(err: UpstreamError) {
     return { status: 502 as const, body: { error: { message: "Upstream error", type: "upstream_error", code: "upstream_error" } } };
   }
   return { status: err.statusCode as any, body: { error: { message: err.message, type: "upstream_error", code: "upstream_error" } } };
+}
+
+function detectInitiatorChat(messages: any[]): Initiator {
+  if (!messages?.length) return "user";
+  return messages.some((m: any) => m.role === "assistant" || m.role === "tool") ? "agent" : "user";
+}
+
+function detectInitiatorResponses(input: any): Initiator {
+  if (typeof input === "string" || !Array.isArray(input) || !input.length) return "user";
+  const agentTypes = ["function_call_output", "tool_call_output", "computer_call_output"];
+  return input.some((i: any) => i.role === "assistant" || agentTypes.includes(i.type)) ? "agent" : "user";
+}
+
+function countTurns(messages: any[]): number {
+  if (!messages?.length) return 0;
+  return messages.filter((m: any) => m.role === "assistant" || m.role === "tool").length;
 }
 
 // POST /v1/chat/completions
@@ -60,8 +77,17 @@ openai.post("/v1/chat/completions", async (c) => {
     }
 
     const chatReq = translateChatRequest(body);
-    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
-    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
+    const initiator = detectInitiatorChat(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+    const turns = countTurns(body.messages);
+    logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model });
+
+    const doFetch = useOpenRouter
+      ? openrouterFetch
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+    const doStream = useOpenRouter
+      ? streamOpenRouter
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
 
     if (chatReq.stream) {
       // Streaming response
@@ -156,8 +182,18 @@ openai.post("/v1/responses", async (c) => {
     }
 
     const { chatBody, model } = translateResponsesRequest(body);
-    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
-    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
+    const initiator = detectInitiatorResponses(body.input);
+    const chatMessages = Array.isArray(body.input) ? body.input : [];
+    const { interactionId, agentTaskId } = deriveSessionIds(chatMessages);
+    const turns = chatMessages.filter((i: any) => i.role === "assistant" || ["function_call_output", "tool_call_output", "computer_call_output"].includes(i.type)).length;
+    logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model });
+
+    const doFetch = useOpenRouter
+      ? openrouterFetch
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+    const doStream = useOpenRouter
+      ? streamOpenRouter
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
 
     if (body.stream) {
       chatBody.stream = true;

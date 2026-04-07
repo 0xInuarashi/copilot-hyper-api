@@ -7,6 +7,7 @@ import {
 } from "../translate/anthropic.js";
 import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
 import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
+import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { judge, autoRouteHeaders, textOf, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
@@ -30,6 +31,22 @@ function mapUpstreamErrorAnthropic(err: UpstreamError) {
     status: err.statusCode as any,
     body: { type: "error", error: { type: "api_error", message: err.message } },
   };
+}
+
+function detectInitiatorAnthropic(messages: any[]): Initiator {
+  if (!messages?.length) return "user";
+  return messages.some((m: any) => {
+    if (m.role === "assistant") return true;
+    if (m.role === "user" && Array.isArray(m.content)) {
+      return m.content.some((b: any) => b.type === "tool_result");
+    }
+    return false;
+  }) ? "agent" : "user";
+}
+
+function countTurnsAnthropic(messages: any[]): number {
+  if (!messages?.length) return 0;
+  return messages.filter((m: any) => m.role === "assistant").length;
 }
 
 async function handleMessages(c: any) {
@@ -73,8 +90,17 @@ async function handleMessages(c: any) {
     }
 
     const { chatBody, model } = translateAnthropicRequest(body);
-    const doFetch = useOpenRouter ? openrouterFetch : copilotFetch;
-    const doStream = useOpenRouter ? streamOpenRouter : streamCopilot;
+    const initiator = detectInitiatorAnthropic(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+    const turns = countTurnsAnthropic(body.messages);
+    logger.info({ event: "interaction", route: "/v1/messages", initiator, turns, model: body.model });
+
+    const doFetch = useOpenRouter
+      ? openrouterFetch
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+    const doStream = useOpenRouter
+      ? streamOpenRouter
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
 
     if (body.stream) {
       chatBody.stream = true;
