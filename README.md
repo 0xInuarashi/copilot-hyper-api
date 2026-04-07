@@ -47,6 +47,38 @@ When using `"model": "auto"`, the judge only runs on the first user turn. All su
 
 ---
 
+## Tested Clients
+
+### Claude Code
+
+Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) via the Anthropic Messages API (`/v1/messages`). Point `ANTHROPIC_BASE_URL` at the proxy and set your proxy key as `ANTHROPIC_API_KEY`:
+
+```bash
+ANTHROPIC_BASE_URL="http://localhost:8080" \
+ANTHROPIC_API_KEY="<your-proxy-key>" \
+claude
+```
+
+For auto-routing, override the model defaults to avoid burning premium credits on subagent calls:
+
+```bash
+ANTHROPIC_BASE_URL="http://localhost:8080" \
+ANTHROPIC_API_KEY="<your-proxy-key>" \
+ANTHROPIC_DEFAULT_OPUS_MODEL="auto" \
+ANTHROPIC_DEFAULT_SONNET_MODEL="auto" \
+ANTHROPIC_DEFAULT_HAIKU_MODEL="auto" \
+CLAUDE_CODE_SUBAGENT_MODEL="auto" \
+claude
+```
+
+Multi-turn agentic sessions (tool calls, subagents) are tracked as a single billing interaction. The judge runs once on the first user turn and all subsequent agent turns reuse the cached model.
+
+### Other Clients
+
+Any client that speaks OpenAI Chat (`/v1/chat/completions`), OpenAI Responses (`/v1/responses`), or Anthropic Messages (`/v1/messages`) should work — Cursor, Continue, Cline, Aider, Open Interpreter, custom scripts, etc. These haven't been explicitly tested but the API surface is standard. If something doesn't work, open an issue.
+
+---
+
 ## The Auto Router
 
 Set `"model": "auto"` and let the system pick the best model for the job.
