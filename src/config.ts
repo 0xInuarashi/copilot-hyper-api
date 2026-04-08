@@ -14,6 +14,8 @@ const configSchema = z.object({
   OPENROUTER_ENABLED: z.preprocess((v) => v === "true" || v === "1" || v === true, z.boolean().default(false)),
   OPENROUTER_API_KEY: z.string().default(""),
   OPENROUTER_MODEL: z.string().default(""),
+  STATS_ENABLED: z.preprocess((v) => v === "true" || v === "1" || v === true, z.boolean().default(false)),
+  STATS_DIR: z.string().default("./data/stats"),
 });
 
 export type Config = z.infer<typeof configSchema>;

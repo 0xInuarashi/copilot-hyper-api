@@ -373,4 +373,20 @@ export class ResponsesStreamMachine {
   getResponseId(): string {
     return this.responseId;
   }
+
+  getUsage(): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+    return {
+      prompt_tokens: this.usage?.prompt_tokens ?? 0,
+      completion_tokens: this.usage?.completion_tokens ?? 0,
+      total_tokens: this.usage?.total_tokens ?? 0,
+    };
+  }
+
+  getFinishReason(): string | null {
+    return null; // Responses API doesn't expose finish_reason per-item
+  }
+
+  getToolCallsCount(): number {
+    return this.currentToolCalls.size;
+  }
 }

@@ -14,6 +14,7 @@ import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.
 import { formatSSE } from "../translate/sse.js";
 import { judge, autoRouteHeaders, textOf, getCachedRoute, setCachedRoute, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
+import { emitStats, type StatsContext } from "../stats/record.js";
 
 const openai = new Hono();
 
@@ -45,11 +46,25 @@ function countTurns(messages: any[]): number {
 
 // POST /v1/chat/completions
 openai.post("/v1/chat/completions", async (c) => {
+  const startTime = Date.now();
+  const requestId = c.res.headers.get("x-request-id") ?? "";
+  const requestedModel = { value: "" };
+
+  const sctx: StatsContext = {
+    requestId, startTime, endpoint: "/v1/chat/completions", apiFormat: "openai-chat",
+    requestedModel: "", resolvedModel: "", provider: "copilot",
+    streaming: false, initiator: "user", interactionId: "", turns: 0, autoRoute: null,
+  };
+
   try {
     const body = await c.req.json();
+    requestedModel.value = body.model ?? "";
+    sctx.requestedModel = requestedModel.value;
 
     const initiator = detectInitiatorChat(body.messages);
     const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+    sctx.initiator = initiator;
+    sctx.interactionId = interactionId;
 
     // Auto-route: judge on user turns, reuse cached model on agent turns
     let ah: Record<string, string> = {};
@@ -60,6 +75,7 @@ openai.post("/v1/chat/completions", async (c) => {
         body.model = cached.model;
         useOpenRouter = cached.provider === "openrouter";
         ah = { ...cached.ah, "x-auto-cached": "true" };
+        sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
         logger.info({ event: "auto_route_cached", route: "/v1/chat/completions", model: cached.model });
       } else {
         const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
@@ -68,9 +84,13 @@ openai.post("/v1/chat/completions", async (c) => {
         useOpenRouter = jr.provider === "openrouter";
         ah = autoRouteHeaders(jr);
         setCachedRoute(interactionId, jr);
+        sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
         logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
       }
     }
+
+    sctx.resolvedModel = body.model;
+    sctx.provider = useOpenRouter ? "openrouter" : "copilot";
 
     // Validate model (skip for OpenRouter — not in Copilot's model list)
     if (!useOpenRouter) {
@@ -79,6 +99,7 @@ openai.post("/v1/chat/completions", async (c) => {
         resolveModel(models, body.model);
       } catch (err) {
         if (err instanceof ModelNotFoundError) {
+          emitStats(sctx, { statusCode: 404, error: { type: "model_not_found", status_code: 404, message: err.message } });
           return c.json(
             { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
             404,
@@ -90,6 +111,8 @@ openai.post("/v1/chat/completions", async (c) => {
 
     const chatReq = translateChatRequest(body);
     const turns = countTurns(body.messages);
+    sctx.turns = turns;
+    sctx.streaming = !!chatReq.stream;
     logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model });
 
     const doFetch = useOpenRouter
@@ -102,6 +125,10 @@ openai.post("/v1/chat/completions", async (c) => {
     if (chatReq.stream) {
       // Streaming response
       const encoder = new TextEncoder();
+      let lastUsage: any = null;
+      let lastFinishReason: string | null = null;
+      let toolCallCount = 0;
+
       const readableStream = new ReadableStream({
         async start(controller) {
           try {
@@ -110,11 +137,23 @@ openai.post("/v1/chat/completions", async (c) => {
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                 break;
               }
+              try {
+                const parsed = JSON.parse(event.data);
+                if (parsed.usage) lastUsage = parsed.usage;
+                const choice = parsed.choices?.[0];
+                if (choice?.finish_reason) lastFinishReason = choice.finish_reason;
+                if (choice?.delta?.tool_calls) {
+                  for (const tc of choice.delta.tool_calls) {
+                    if (tc.id) toolCallCount++;
+                  }
+                }
+              } catch {}
               controller.enqueue(encoder.encode(`data: ${event.data}\n\n`));
             }
           } catch (err) {
             // Stream error
           } finally {
+            emitStats(sctx, { statusCode: 200, usage: lastUsage ? { prompt_tokens: lastUsage.prompt_tokens ?? 0, completion_tokens: lastUsage.completion_tokens ?? 0, total_tokens: lastUsage.total_tokens ?? 0 } : undefined, finishReason: lastFinishReason, toolCallsCount: toolCallCount });
             controller.close();
           }
         },
@@ -135,29 +174,51 @@ openai.post("/v1/chat/completions", async (c) => {
       method: "POST",
       body: JSON.stringify(chatReq),
     });
-    const upstream = await res.json();
+    const upstream: any = await res.json();
+    const choice = upstream.choices?.[0];
+    emitStats(sctx, {
+      statusCode: 200,
+      usage: upstream.usage ? { prompt_tokens: upstream.usage.prompt_tokens ?? 0, completion_tokens: upstream.usage.completion_tokens ?? 0, total_tokens: upstream.usage.total_tokens ?? 0 } : undefined,
+      finishReason: choice?.finish_reason ?? null,
+      toolCallsCount: choice?.message?.tool_calls?.length ?? 0,
+    });
     for (const [k, v] of Object.entries(ah)) c.header(k, v);
     return c.json(translateChatResponse(upstream));
   } catch (err: any) {
     if (err instanceof InvalidChatRequestError) {
+      emitStats(sctx, { statusCode: 400, error: { type: "invalid_request", status_code: 400, message: err.message } });
       return c.json({ error: { message: err.message, type: "invalid_request_error", code: "invalid_request" } }, 400);
     }
     if (err instanceof UpstreamError) {
       const mapped = mapUpstreamError(err);
+      emitStats(sctx, { statusCode: mapped.status, error: { type: "upstream_error", status_code: mapped.status, message: err.message } });
       return c.json(mapped.body, mapped.status);
     }
+    emitStats(sctx, { statusCode: 500, error: { type: "internal_error", status_code: 500, message: err.message ?? "Internal error" } });
     return c.json({ error: { message: err.message ?? "Internal error", type: "server_error", code: "internal_error" } }, 500);
   }
 });
 
 // POST /v1/responses
 openai.post("/v1/responses", async (c) => {
+  const startTime = Date.now();
+  const requestId = c.res.headers.get("x-request-id") ?? "";
+
+  const sctx: StatsContext = {
+    requestId, startTime, endpoint: "/v1/responses", apiFormat: "openai-responses",
+    requestedModel: "", resolvedModel: "", provider: "copilot",
+    streaming: false, initiator: "user", interactionId: "", turns: 0, autoRoute: null,
+  };
+
   try {
     const body = await c.req.json();
+    sctx.requestedModel = body.model ?? "";
 
     const initiator = detectInitiatorResponses(body.input);
     const chatMessages = Array.isArray(body.input) ? body.input : [];
     const { interactionId, agentTaskId } = deriveSessionIds(chatMessages);
+    sctx.initiator = initiator;
+    sctx.interactionId = interactionId;
 
     // Auto-route: judge on user turns, reuse cached model on agent turns
     let ah: Record<string, string> = {};
@@ -168,6 +229,7 @@ openai.post("/v1/responses", async (c) => {
         body.model = cached.model;
         useOpenRouter = cached.provider === "openrouter";
         ah = { ...cached.ah, "x-auto-cached": "true" };
+        sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
         logger.info({ event: "auto_route_cached", route: "/v1/responses", model: cached.model });
       } else {
         const msgs: Array<{role: string, content: string}> = [];
@@ -184,9 +246,13 @@ openai.post("/v1/responses", async (c) => {
         useOpenRouter = jr.provider === "openrouter";
         ah = autoRouteHeaders(jr);
         setCachedRoute(interactionId, jr);
+        sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
         logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
       }
     }
+
+    sctx.resolvedModel = body.model;
+    sctx.provider = useOpenRouter ? "openrouter" : "copilot";
 
     // Validate model (skip for OpenRouter)
     if (!useOpenRouter) {
@@ -195,6 +261,7 @@ openai.post("/v1/responses", async (c) => {
         resolveModel(models, body.model);
       } catch (err) {
         if (err instanceof ModelNotFoundError) {
+          emitStats(sctx, { statusCode: 404, error: { type: "model_not_found", status_code: 404, message: err.message } });
           return c.json(
             { error: { message: err.message, type: "invalid_request_error", code: "model_not_found" } },
             404,
@@ -206,6 +273,8 @@ openai.post("/v1/responses", async (c) => {
 
     const { chatBody, model } = translateResponsesRequest(body);
     const turns = chatMessages.filter((i: any) => i.role === "assistant" || ["function_call_output", "tool_call_output", "computer_call_output"].includes(i.type)).length;
+    sctx.turns = turns;
+    sctx.streaming = !!body.stream;
     logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model });
 
     const doFetch = useOpenRouter
@@ -238,6 +307,8 @@ openai.post("/v1/responses", async (c) => {
           } catch (err) {
             // Stream error
           } finally {
+            const usage = machine.getUsage();
+            emitStats(sctx, { statusCode: 200, usage, finishReason: machine.getFinishReason(), toolCallsCount: machine.getToolCallsCount() });
             controller.close();
           }
         },
@@ -258,17 +329,27 @@ openai.post("/v1/responses", async (c) => {
       method: "POST",
       body: JSON.stringify(chatBody),
     });
-    const upstream = await res.json();
+    const upstream: any = await res.json();
+    const choice = upstream.choices?.[0];
+    emitStats(sctx, {
+      statusCode: 200,
+      usage: upstream.usage ? { prompt_tokens: upstream.usage.prompt_tokens ?? 0, completion_tokens: upstream.usage.completion_tokens ?? 0, total_tokens: upstream.usage.total_tokens ?? 0 } : undefined,
+      finishReason: choice?.finish_reason ?? null,
+      toolCallsCount: choice?.message?.tool_calls?.length ?? 0,
+    });
     for (const [k, v] of Object.entries(ah)) c.header(k, v);
     return c.json(translateResponsesBuffered(upstream, model));
   } catch (err: any) {
     if (err instanceof InvalidResponsesRequestError) {
+      emitStats(sctx, { statusCode: 400, error: { type: "invalid_request", status_code: 400, message: err.message } });
       return c.json({ error: { message: err.message, type: "invalid_request_error", code: "invalid_request" } }, 400);
     }
     if (err instanceof UpstreamError) {
       const mapped = mapUpstreamError(err);
+      emitStats(sctx, { statusCode: mapped.status, error: { type: "upstream_error", status_code: mapped.status, message: err.message } });
       return c.json(mapped.body, mapped.status);
     }
+    emitStats(sctx, { statusCode: 500, error: { type: "internal_error", status_code: 500, message: err.message ?? "Internal error" } });
     return c.json({ error: { message: err.message ?? "Internal error", type: "server_error", code: "internal_error" } }, 500);
   }
 });

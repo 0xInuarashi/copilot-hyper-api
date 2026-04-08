@@ -8,6 +8,7 @@
     "dev-debug": "LOG_LEVEL=debug bun --watch src/index.ts",
     "dev-raw": "LOG_LEVEL=raw bun --watch src/index.ts",
     "login": "bun run src/cli/login.ts",
+    "stats": "bun run src/cli/stats.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/ test/",
     "test": "bun test",

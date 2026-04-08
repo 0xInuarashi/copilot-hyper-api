@@ -7,6 +7,7 @@ import healthRoutes from "./routes/health.js";
 import modelRoutes from "./routes/models.js";
 import openaiRoutes from "./routes/openai.js";
 import anthropicRoutes from "./routes/anthropic.js";
+import statsRoutes from "./routes/stats.js";
 
 const app = new Hono();
 
@@ -112,11 +113,13 @@ app.route("/", healthRoutes);
 // Auth middleware for API routes
 app.use("/v1/*", proxyKeyMiddleware("openai"));
 app.use("/anthropic/*", proxyKeyMiddleware("anthropic"));
+app.use("/stats*", proxyKeyMiddleware("openai"));
 
 // API routes
 app.route("/", modelRoutes);
 app.route("/", openaiRoutes);
 app.route("/", anthropicRoutes);
+app.route("/", statsRoutes);
 
 // 404 fallback
 app.notFound((c) => {

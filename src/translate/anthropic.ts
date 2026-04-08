@@ -410,4 +410,20 @@ export class AnthropicStreamMachine {
   getMessageId(): string {
     return this.messageId;
   }
+
+  getUsage(): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+    return {
+      prompt_tokens: this.usage.input_tokens,
+      completion_tokens: this.usage.output_tokens,
+      total_tokens: this.usage.input_tokens + this.usage.output_tokens,
+    };
+  }
+
+  getFinishReason(): string {
+    return this.finishReason;
+  }
+
+  getToolCallsCount(): number {
+    return this.currentToolCalls.size;
+  }
 }
