@@ -121,7 +121,7 @@ openai.post("/v1/chat/completions", async (c) => {
     const turns = countTurns(body.messages);
     sctx.turns = turns;
     sctx.streaming = !!chatReq.stream;
-    logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model });
+    logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model, interactionId, agentTaskId });
 
     const doFetch = useOpenRouter
       ? openrouterFetch
@@ -283,7 +283,7 @@ openai.post("/v1/responses", async (c) => {
     const turns = chatMessages.filter((i: any) => i.role === "assistant" || ["function_call_output", "tool_call_output", "computer_call_output"].includes(i.type)).length;
     sctx.turns = turns;
     sctx.streaming = !!body.stream;
-    logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model });
+    logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model, interactionId, agentTaskId });
 
     const doFetch = useOpenRouter
       ? openrouterFetch

@@ -127,7 +127,7 @@ async function handleMessages(c: any) {
     const turns = countTurnsAnthropic(body.messages);
     sctx.turns = turns;
     sctx.streaming = !!body.stream;
-    logger.info({ event: "interaction", route: "/v1/messages", initiator, turns, model: body.model });
+    logger.info({ event: "interaction", route: "/v1/messages", initiator, turns, model: body.model, interactionId, agentTaskId });
 
     const doFetch = useOpenRouter
       ? openrouterFetch
