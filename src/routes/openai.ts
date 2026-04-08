@@ -30,13 +30,21 @@ function mapUpstreamError(err: UpstreamError) {
 
 function detectInitiatorChat(messages: any[]): Initiator {
   if (!messages?.length) return "user";
-  return messages.some((m: any) => m.role === "assistant" || m.role === "tool") ? "agent" : "user";
+  // Check the tail: if the last message is a tool response, this is an agent continuation.
+  // If it's a plain user message, it's a new user turn (even with prior assistant messages in history).
+  const last = messages[messages.length - 1];
+  if (last?.role === "tool") return "agent";
+  if (last?.role === "assistant") return "agent";
+  return "user";
 }
 
 function detectInitiatorResponses(input: any): Initiator {
   if (typeof input === "string" || !Array.isArray(input) || !input.length) return "user";
   const agentTypes = ["function_call_output", "tool_call_output", "computer_call_output"];
-  return input.some((i: any) => i.role === "assistant" || agentTypes.includes(i.type)) ? "agent" : "user";
+  const last = input[input.length - 1];
+  if (last?.role === "assistant") return "agent";
+  if (agentTypes.includes(last?.type)) return "agent";
+  return "user";
 }
 
 function countTurns(messages: any[]): number {

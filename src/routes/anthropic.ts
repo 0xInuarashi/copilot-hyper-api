@@ -36,13 +36,15 @@ function mapUpstreamErrorAnthropic(err: UpstreamError) {
 
 function detectInitiatorAnthropic(messages: any[]): Initiator {
   if (!messages?.length) return "user";
-  return messages.some((m: any) => {
-    if (m.role === "assistant") return true;
-    if (m.role === "user" && Array.isArray(m.content)) {
-      return m.content.some((b: any) => b.type === "tool_result");
-    }
-    return false;
-  }) ? "agent" : "user";
+  // Check the last message: if it carries tool_results, this is an agent continuation.
+  // If it's a plain user text message, it's a new user turn (even with prior assistant messages in history).
+  const last = messages[messages.length - 1];
+  if (last?.role === "user" && Array.isArray(last.content)) {
+    if (last.content.some((b: any) => b.type === "tool_result")) return "agent";
+  }
+  // If the last message is an assistant message (shouldn't normally happen, but defensive)
+  if (last?.role === "assistant") return "agent";
+  return "user";
 }
 
 function countTurnsAnthropic(messages: any[]): number {
