@@ -37,10 +37,25 @@ function stableText(content: any): string {
   return raw.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, "").trim();
 }
 
-/** Derive stable interaction + task IDs from the first user message in a conversation. */
+/**
+ * Derive stable interaction + task IDs from the latest user prompt in a conversation.
+ * Each new user turn gets a fresh interaction ID (matching Copilot CLI behavior).
+ * Agent continuations (tool_result) reuse the preceding user turn's ID.
+ */
 export function deriveSessionIds(messages: any[]): { interactionId: string; agentTaskId: string } {
-  const firstUser = messages?.find((m: any) => m.role === "user");
-  const seed = stableText(firstUser?.content ?? "");
+  // Walk backwards to find the last plain user message (not tool_result).
+  // This ensures agent turns (tool results) share the same ID as the user turn that triggered them.
+  let seed = "";
+  if (messages?.length) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "user") continue;
+      // Skip user messages that are only tool_results (Anthropic format)
+      if (Array.isArray(m.content) && m.content.every((b: any) => b.type === "tool_result")) continue;
+      seed = stableText(m.content ?? "");
+      break;
+    }
+  }
   return {
     interactionId: deriveUUID(seed, "interaction"),
     agentTaskId: deriveUUID(seed, "agent-task"),
