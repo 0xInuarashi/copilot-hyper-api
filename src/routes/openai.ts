@@ -70,7 +70,7 @@ openai.post("/v1/chat/completions", async (c) => {
     sctx.requestedModel = requestedModel.value;
 
     const initiator = detectInitiatorChat(body.messages);
-    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages, initiator);
     sctx.initiator = initiator;
     sctx.interactionId = interactionId;
 
@@ -224,7 +224,7 @@ openai.post("/v1/responses", async (c) => {
 
     const initiator = detectInitiatorResponses(body.input);
     const chatMessages = Array.isArray(body.input) ? body.input : [];
-    const { interactionId, agentTaskId } = deriveSessionIds(chatMessages);
+    const { interactionId, agentTaskId } = deriveSessionIds(chatMessages, initiator);
     sctx.initiator = initiator;
     sctx.interactionId = interactionId;
 

@@ -68,7 +68,7 @@ async function handleMessages(c: any) {
     sctx.requestedModel = body.model ?? "";
 
     const initiator = detectInitiatorAnthropic(body.messages);
-    const { interactionId, agentTaskId } = deriveSessionIds(body.messages);
+    const { interactionId, agentTaskId } = deriveSessionIds(body.messages, initiator);
     sctx.initiator = initiator;
     sctx.interactionId = interactionId;
 

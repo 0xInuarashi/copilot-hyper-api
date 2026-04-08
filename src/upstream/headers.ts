@@ -7,19 +7,6 @@ export type Initiator = "user" | "agent";
 const CLIENT_SESSION_ID = crypto.randomUUID();
 const CLIENT_MACHINE_ID = crypto.randomUUID();
 
-/** Derive a deterministic UUID from a seed string + salt. */
-function deriveUUID(seed: string, salt: string): string {
-  const hex = createHash("sha256").update(salt + seed).digest("hex");
-  // Format as UUID v4 shape: 8-4-4-4-12
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    "4" + hex.slice(13, 16),
-    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),
-    hex.slice(20, 32),
-  ].join("-");
-}
-
 /** Extract stable text from a message, stripping injected tags like <system-reminder>. */
 function stableText(content: any): string {
   let raw: string;
@@ -33,33 +20,78 @@ function stableText(content: any): string {
   } else {
     return "";
   }
-  // Strip XML-tagged blocks injected by frameworks (e.g. <system-reminder>...</system-reminder>)
   return raw.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, "").trim();
 }
 
 /**
- * Derive stable interaction + task IDs from the latest user prompt in a conversation.
- * Each new user turn gets a fresh interaction ID (matching Copilot CLI behavior).
- * Agent continuations (tool_result) reuse the preceding user turn's ID.
+ * Conversation session map: conversationKey → current random UUIDs.
+ * Key is a hash of the first user message (stable across all turns in a conversation).
+ * Value holds the current interaction's random UUIDs, rotated on each new user turn.
  */
-export function deriveSessionIds(messages: any[]): { interactionId: string; agentTaskId: string } {
-  // Walk backwards to find the last plain user message (not tool_result).
-  // This ensures agent turns (tool results) share the same ID as the user turn that triggered them.
-  let seed = "";
-  if (messages?.length) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role !== "user") continue;
-      // Skip user messages that are only tool_results (Anthropic format)
-      if (Array.isArray(m.content) && m.content.every((b: any) => b.type === "tool_result")) continue;
-      seed = stableText(m.content ?? "");
-      break;
+const conversationSessions = new Map<string, { interactionId: string; agentTaskId: string }>();
+
+/**
+ * Derive a stable conversation key from all user messages.
+ * Hashing all user messages (not just the first) prevents collisions when
+ * two conversations share the same opening message but diverge later.
+ * A creation timestamp is embedded on first encounter to further eliminate
+ * collisions for truly identical message sequences.
+ */
+const conversationTimestamps = new Map<string, string>();
+
+function conversationKey(messages: any[]): string {
+  // Only include genuine user text messages — skip tool_result-only messages
+  // (Anthropic sends tool results as role:"user" with type:"tool_result" blocks,
+  // which are agent continuations, not real user turns).
+  const userMsgs = messages?.filter((m: any) => {
+    if (m.role !== "user") return false;
+    if (Array.isArray(m.content)) {
+      return m.content.some((b: any) => b.type !== "tool_result");
+    }
+    return true;
+  });
+  if (!userMsgs?.length) return "";
+  const contentKey = userMsgs.map((m: any) => stableText(m.content ?? "")).join("|");
+  const baseHash = createHash("sha256").update(contentKey).digest("hex");
+
+  // Attach a timestamp on first encounter so identical message sequences
+  // started at different times still get distinct keys.
+  if (!conversationTimestamps.has(baseHash)) {
+    conversationTimestamps.set(baseHash, Date.now().toString());
+    if (conversationTimestamps.size > 10000) {
+      const oldest = conversationTimestamps.keys().next().value!;
+      conversationTimestamps.delete(oldest);
     }
   }
-  return {
-    interactionId: deriveUUID(seed, "interaction"),
-    agentTaskId: deriveUUID(seed, "agent-task"),
-  };
+  return createHash("sha256").update(baseHash + conversationTimestamps.get(baseHash)!).digest("hex");
+}
+
+/**
+ * Get session IDs for this request. Uses true random UUIDs (matching Copilot CLI).
+ * - User turns: generate fresh UUIDs, store them for the conversation.
+ * - Agent turns: reuse the current UUIDs from the conversation.
+ */
+export function deriveSessionIds(messages: any[], initiator: Initiator): { interactionId: string; agentTaskId: string } {
+  const key = conversationKey(messages);
+  if (!key) {
+    return { interactionId: crypto.randomUUID(), agentTaskId: crypto.randomUUID() };
+  }
+
+  if (initiator === "agent") {
+    const existing = conversationSessions.get(key);
+    if (existing) return existing;
+  }
+
+  // New user turn: rotate UUIDs
+  const ids = { interactionId: crypto.randomUUID(), agentTaskId: crypto.randomUUID() };
+  conversationSessions.set(key, ids);
+
+  if (conversationSessions.size > 10000) {
+    const oldest = conversationSessions.keys().next().value!;
+    conversationSessions.delete(oldest);
+  }
+
+  return ids;
 }
 
 export function getCopilotHeaders(
