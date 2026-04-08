@@ -36,10 +36,10 @@ Respond with ONLY a JSON object, no markdown fences:
 {"complexity": "low"|"hard"|"extreme", "expectedLength": "short"|"long", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`;
 
 export async function judge(messages: Array<{ role: string; content: string }>, modelOverride?: string): Promise<JudgeResult> {
-  const userContent = messages
-    .filter((m) => m.role === "user")
-    .map((m) => m.content)
-    .join("\n\n");
+  // Only classify the LAST user message — that's the new request.
+  // Including full history causes long conversations to always route to hard/extreme.
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const userContent = lastUser?.content ?? "";
 
   const systemMessages = messages
     .filter((m) => m.role === "system")
