@@ -146,6 +146,66 @@ export function routeModel(complexity: Complexity, expectedLength: ExpectedLengt
   return { model: "claude-opus-4.6", provider: "copilot" };
 }
 
+/**
+ * Prefix overrides for auto-mode. Users can type #opus, #sonnet, etc. at the
+ * start of their message to force a specific model without invoking the judge.
+ */
+const PREFIX_ROUTES: Record<string, { model: string; provider: Provider }> = {
+  "#opus":    { model: "claude-opus-4.6",   provider: "copilot" },
+  "#sonnet":  { model: "claude-sonnet-4.6", provider: "copilot" },
+  "#gpt4o":   { model: "gpt-4o",            provider: "copilot" },
+  "#free":    { model: "oswe-vscode-prime",  provider: "copilot" },
+};
+
+export interface PrefixRouteResult {
+  model: string;
+  provider: Provider;
+  prefix: string;
+}
+
+/**
+ * Check the last user message for a #model prefix override.
+ * Returns the route + stripped prefix if found, undefined otherwise.
+ * The caller is responsible for stripping the prefix from the actual message content.
+ */
+export function parsePrefixRoute(messages: Array<{ role: string; content: string }>): PrefixRouteResult | undefined {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!lastUser) return undefined;
+  const text = lastUser.content.trimStart();
+  for (const [prefix, route] of Object.entries(PREFIX_ROUTES)) {
+    if (text.toLowerCase().startsWith(prefix) && (text.length === prefix.length || /\s/.test(text[prefix.length]))) {
+      return { ...route, prefix };
+    }
+  }
+  return undefined;
+}
+
+/** Strip the prefix tag from the last user message content (mutates the array). */
+export function stripPrefixFromMessages(messages: any[], prefix: string): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    if (typeof m.content === "string") {
+      const trimmed = m.content.trimStart();
+      if (trimmed.toLowerCase().startsWith(prefix)) {
+        m.content = trimmed.slice(prefix.length).trimStart();
+        return;
+      }
+    } else if (Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          const trimmed = block.text.trimStart();
+          if (trimmed.toLowerCase().startsWith(prefix)) {
+            block.text = trimmed.slice(prefix.length).trimStart();
+            return;
+          }
+        }
+      }
+    }
+    return;
+  }
+}
+
 export const MODEL_TIERS = {
   free: "oswe-vscode-prime",
   paid: "claude-sonnet-4.6",

@@ -12,7 +12,7 @@ import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
 import { formatSSE } from "../translate/sse.js";
-import { judge, autoRouteHeaders, textOf, getCachedRoute, setCachedRoute, type JudgeResult } from "../auto/judge.js";
+import { judge, autoRouteHeaders, textOf, getCachedRoute, setCachedRoute, parsePrefixRoute, stripPrefixFromMessages, type JudgeResult } from "../auto/judge.js";
 import { logger } from "../logger.js";
 import { emitStats, type StatsContext } from "../stats/record.js";
 
@@ -78,22 +78,33 @@ openai.post("/v1/chat/completions", async (c) => {
     let ah: Record<string, string> = {};
     let useOpenRouter = false;
     if (body.model === "auto") {
-      const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
-      if (cached) {
-        body.model = cached.model;
-        useOpenRouter = cached.provider === "openrouter";
-        ah = { ...cached.ah, "x-auto-cached": "true" };
-        sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
-        logger.info({ event: "auto_route_cached", route: "/v1/chat/completions", model: cached.model });
+      // Prefix override: #opus, #sonnet, etc. bypass the judge entirely
+      const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
+      const prefixHit = initiator === "user" ? parsePrefixRoute(msgs) : undefined;
+      if (prefixHit) {
+        body.model = prefixHit.model;
+        useOpenRouter = prefixHit.provider === "openrouter";
+        stripPrefixFromMessages(body.messages, prefixHit.prefix);
+        ah = { "x-auto-routed": "true", "x-auto-model": prefixHit.model, "x-auto-provider": prefixHit.provider, "x-auto-prefix": prefixHit.prefix };
+        sctx.autoRoute = { complexity: "low" as any, expected_length: "short" as any, confidence: 1, reasoning: `prefix override: ${prefixHit.prefix}`, judge_model: "", judge_latency_ms: 0, cached: false };
+        logger.info({ event: "auto_route_prefix", route: "/v1/chat/completions", prefix: prefixHit.prefix, model: prefixHit.model });
       } else {
-        const msgs = (body.messages ?? []).map((m: any) => ({ role: m.role ?? "user", content: textOf(m.content) }));
-        const jr = await judge(msgs);
-        body.model = jr.routed;
-        useOpenRouter = jr.provider === "openrouter";
-        ah = autoRouteHeaders(jr);
-        setCachedRoute(interactionId, jr);
-        sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
-        logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
+        const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
+        if (cached) {
+          body.model = cached.model;
+          useOpenRouter = cached.provider === "openrouter";
+          ah = { ...cached.ah, "x-auto-cached": "true" };
+          sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
+          logger.info({ event: "auto_route_cached", route: "/v1/chat/completions", model: cached.model });
+        } else {
+          const jr = await judge(msgs);
+          body.model = jr.routed;
+          useOpenRouter = jr.provider === "openrouter";
+          ah = autoRouteHeaders(jr);
+          setCachedRoute(interactionId, jr);
+          sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
+          logger.info({ event: "auto_route", route: "/v1/chat/completions", ...ah });
+        }
       }
     }
 
@@ -232,30 +243,51 @@ openai.post("/v1/responses", async (c) => {
     let ah: Record<string, string> = {};
     let useOpenRouter = false;
     if (body.model === "auto") {
-      const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
-      if (cached) {
-        body.model = cached.model;
-        useOpenRouter = cached.provider === "openrouter";
-        ah = { ...cached.ah, "x-auto-cached": "true" };
-        sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
-        logger.info({ event: "auto_route_cached", route: "/v1/responses", model: cached.model });
-      } else {
-        const msgs: Array<{role: string, content: string}> = [];
-        if (body.instructions) msgs.push({ role: "system", content: body.instructions });
-        if (typeof body.input === "string") {
-          msgs.push({ role: "user", content: body.input });
-        } else if (Array.isArray(body.input)) {
-          for (const item of body.input) {
-            msgs.push({ role: item.role ?? "user", content: textOf(item.content ?? item.text ?? item) });
-          }
+      // Build flat message list for prefix detection + judge
+      const msgs: Array<{role: string, content: string}> = [];
+      if (body.instructions) msgs.push({ role: "system", content: body.instructions });
+      if (typeof body.input === "string") {
+        msgs.push({ role: "user", content: body.input });
+      } else if (Array.isArray(body.input)) {
+        for (const item of body.input) {
+          msgs.push({ role: item.role ?? "user", content: textOf(item.content ?? item.text ?? item) });
         }
-        const jr = await judge(msgs);
-        body.model = jr.routed;
-        useOpenRouter = jr.provider === "openrouter";
-        ah = autoRouteHeaders(jr);
-        setCachedRoute(interactionId, jr);
-        sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
-        logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
+      }
+
+      // Prefix override: #opus, #sonnet, etc. bypass the judge entirely
+      const prefixHit = initiator === "user" ? parsePrefixRoute(msgs) : undefined;
+      if (prefixHit) {
+        body.model = prefixHit.model;
+        useOpenRouter = prefixHit.provider === "openrouter";
+        // Strip prefix from original input
+        if (typeof body.input === "string") {
+          const trimmed = body.input.trimStart();
+          if (trimmed.toLowerCase().startsWith(prefixHit.prefix)) {
+            body.input = trimmed.slice(prefixHit.prefix.length).trimStart();
+          }
+        } else if (Array.isArray(body.input)) {
+          stripPrefixFromMessages(body.input, prefixHit.prefix);
+        }
+        ah = { "x-auto-routed": "true", "x-auto-model": prefixHit.model, "x-auto-provider": prefixHit.provider, "x-auto-prefix": prefixHit.prefix };
+        sctx.autoRoute = { complexity: "low" as any, expected_length: "short" as any, confidence: 1, reasoning: `prefix override: ${prefixHit.prefix}`, judge_model: "", judge_latency_ms: 0, cached: false };
+        logger.info({ event: "auto_route_prefix", route: "/v1/responses", prefix: prefixHit.prefix, model: prefixHit.model });
+      } else {
+        const cached = initiator === "agent" ? getCachedRoute(interactionId) : undefined;
+        if (cached) {
+          body.model = cached.model;
+          useOpenRouter = cached.provider === "openrouter";
+          ah = { ...cached.ah, "x-auto-cached": "true" };
+          sctx.autoRoute = { complexity: cached.ah["x-auto-complexity"] as any ?? "low", expected_length: cached.ah["x-auto-length"] as any ?? "short", confidence: parseFloat(cached.ah["x-auto-confidence"] ?? "0"), reasoning: "", judge_model: "", judge_latency_ms: 0, cached: true };
+          logger.info({ event: "auto_route_cached", route: "/v1/responses", model: cached.model });
+        } else {
+          const jr = await judge(msgs);
+          body.model = jr.routed;
+          useOpenRouter = jr.provider === "openrouter";
+          ah = autoRouteHeaders(jr);
+          setCachedRoute(interactionId, jr);
+          sctx.autoRoute = { complexity: jr.complexity, expected_length: jr.expectedLength, confidence: jr.confidence, reasoning: jr.reasoning, judge_model: jr.model, judge_latency_ms: jr.latencyMs, cached: false };
+          logger.info({ event: "auto_route", route: "/v1/responses", ...ah });
+        }
       }
     }
 
