@@ -5,7 +5,7 @@ import {
   AnthropicStreamMachine,
   InvalidAnthropicRequestError,
 } from "../translate/anthropic.js";
-import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
+import { copilotFetch, streamCopilot, UpstreamError, createTelemetryAccumulator, buildStealthTelemetry } from "../upstream/client.js";
 import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
@@ -142,12 +142,13 @@ async function handleMessages(c: any) {
     sctx.streaming = !!body.stream;
     logger.info({ event: "interaction", route: "/v1/messages", initiator, turns, model: body.model, interactionId, agentTaskId });
 
+    const telemetry = createTelemetryAccumulator();
     const doFetch = useOpenRouter
       ? openrouterFetch
-      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId, telemetry);
     const doStream = useOpenRouter
       ? streamOpenRouter
-      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId, telemetry);
 
     if (body.stream) {
       chatBody.stream = true;
@@ -176,6 +177,7 @@ async function handleMessages(c: any) {
             try { controller.enqueue(encoder.encode(errorPayload)); } catch { /* controller may be errored */ }
           } finally {
             const usage = machine.getUsage();
+            sctx.stealth = buildStealthTelemetry(telemetry);
             emitStats(sctx, { statusCode: 200, usage, finishReason: machine.getFinishReason(), toolCallsCount: machine.getToolCallsCount() });
             controller.close();
           }
@@ -199,6 +201,7 @@ async function handleMessages(c: any) {
     });
     const upstream: any = await res.json();
     const choice = upstream.choices?.[0];
+    sctx.stealth = buildStealthTelemetry(telemetry);
     emitStats(sctx, {
       statusCode: 200,
       usage: upstream.usage ? { prompt_tokens: upstream.usage.prompt_tokens ?? 0, completion_tokens: upstream.usage.completion_tokens ?? 0, total_tokens: upstream.usage.total_tokens ?? 0 } : undefined,

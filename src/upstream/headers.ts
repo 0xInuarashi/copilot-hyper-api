@@ -1,11 +1,14 @@
 import { createHash } from "crypto";
 import { getConfig } from "../config.js";
+import { getResolvedVersions } from "./version-sync.js";
 
 export type Initiator = "user" | "agent";
 
-// Stable per-process IDs (matching Copilot CLI behavior)
-const CLIENT_SESSION_ID = crypto.randomUUID();
-const CLIENT_MACHINE_ID = crypto.randomUUID();
+// Stable per-process IDs matching real VS Code formats:
+//  - Machine ID: 64-char hex string (SHA-256 of hardware identifiers in real VS Code)
+//  - Session ID: UUID + Unix-ms timestamp (real VS Code appends a timestamp to the UUID)
+const CLIENT_MACHINE_ID = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
+const CLIENT_SESSION_ID = `${crypto.randomUUID()}${Date.now()}`;
 
 /** Extract stable text from a message, stripping injected tags like <system-reminder>. */
 function stableText(content: any): string {
@@ -101,20 +104,29 @@ export function getCopilotHeaders(
   agentTaskId?: string,
 ): Record<string, string> {
   const config = getConfig();
+  // Use live-synced versions when available, fall back to config defaults
+  const v = getResolvedVersions();
   return {
     Authorization: `Bearer ${sessionToken}`,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    "Editor-Version": config.COPILOT_EDITOR_VERSION,
-    "Editor-Plugin-Version": "copilot/1.0.0",
+    "X-Request-Id": crypto.randomUUID(),
+    "Vscode-Sessionid": CLIENT_SESSION_ID,
+    "Vscode-Machineid": CLIENT_MACHINE_ID,
+    "Editor-Version": v.editorVersion,
+    "Editor-Plugin-Version": v.pluginVersion,
     "Copilot-Integration-Id": config.COPILOT_INTEGRATION_ID,
+    "OpenAI-Organization": "github-copilot",
     "OpenAI-Intent": "conversation-panel",
-    "User-Agent": "GithubCopilot/1.0",
+    "Content-Type": "application/json",
+    "User-Agent": v.userAgent,
+    Accept: "application/json",
+    "Accept-Encoding": "gzip, deflate, br",
     "X-Initiator": initiator,
     "X-Interaction-Id": interactionId ?? crypto.randomUUID(),
     "X-Interaction-Type": initiator === "user" ? "conversation-user" : "conversation-agent",
     "X-Agent-Task-Id": agentTaskId ?? crypto.randomUUID(),
     "X-Client-Session-Id": CLIENT_SESSION_ID,
     "X-Client-Machine-Id": CLIENT_MACHINE_ID,
+    "x-github-api-version": v.githubApiVersion,
+    "x-vscode-user-agent-library-version": "undici",
   };
 }

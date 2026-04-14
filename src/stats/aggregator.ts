@@ -188,6 +188,17 @@ export function aggregate(records: StatsRecord[]): AggregatedStats {
   const withTools = records.filter((r) => r.tool_calls_count > 0);
   const totalToolCalls = records.reduce((s, r) => s + r.tool_calls_count, 0);
 
+  // Stealth
+  const stealthRecs = records.filter((r) => r.stealth !== null);
+  const tlsFpCount = stealthRecs.filter((r) => r.stealth!.tls_fingerprint_used).length;
+  const headerOrderCount = stealthRecs.filter((r) => r.stealth!.header_ordering_applied).length;
+  const bodyOrderCount = stealthRecs.filter((r) => r.stealth!.body_ordering_applied).length;
+  const tokenFetches = stealthRecs.filter((r) => r.stealth!.token_fetch_ms != null).map((r) => r.stealth!.token_fetch_ms!);
+  const upstreamFetches = stealthRecs.filter((r) => r.stealth!.upstream_fetch_ms != null).map((r) => r.stealth!.upstream_fetch_ms!);
+  const semaphoreWaits = stealthRecs.map((r) => r.stealth!.semaphore_wait_ms);
+  const totalRetries = stealthRecs.reduce((s, r) => s + r.stealth!.retry_count, 0);
+  const cbOpenCount = stealthRecs.filter((r) => r.stealth!.circuit_breaker_state === "open").length;
+
   // Daily
   const dailyMap = new Map<string, { requests: number; tokens: TokenStats; errors: number; totalLatency: number }>();
   for (const r of records) {
@@ -294,6 +305,17 @@ export function aggregate(records: StatsRecord[]): AggregatedStats {
       avg_tools_per_request: withTools.length > 0 ? Number((totalToolCalls / withTools.length).toFixed(1)) : 0,
     },
 
+    stealth: {
+      requests_with_tls_fingerprint: tlsFpCount,
+      requests_with_header_ordering: headerOrderCount,
+      requests_with_body_ordering: bodyOrderCount,
+      avg_token_fetch_ms: tokenFetches.length > 0 ? Math.round(tokenFetches.reduce((a, b) => a + b, 0) / tokenFetches.length) : 0,
+      avg_upstream_fetch_ms: upstreamFetches.length > 0 ? Math.round(upstreamFetches.reduce((a, b) => a + b, 0) / upstreamFetches.length) : 0,
+      avg_semaphore_wait_ms: semaphoreWaits.length > 0 ? Math.round(semaphoreWaits.reduce((a, b) => a + b, 0) / semaphoreWaits.length) : 0,
+      total_retries: totalRetries,
+      circuit_breaker_open_count: cbOpenCount,
+    },
+
     daily,
     hourly,
   };
@@ -316,6 +338,7 @@ function emptyStats(): AggregatedStats {
     by_model_tier: {},
     errors: { by_type: {}, by_status_code: {} },
     tool_usage: { requests_with_tools: 0, total_tool_calls: 0, avg_tools_per_request: 0 },
+    stealth: { requests_with_tls_fingerprint: 0, requests_with_header_ordering: 0, requests_with_body_ordering: 0, avg_token_fetch_ms: 0, avg_upstream_fetch_ms: 0, avg_semaphore_wait_ms: 0, total_retries: 0, circuit_breaker_open_count: 0 },
     daily: [],
     hourly: [],
   };

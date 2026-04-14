@@ -57,10 +57,12 @@ describe("config", () => {
       PROXY_API_KEY: "sk-test",
       GITHUB_OAUTH_TOKEN: "gho_test",
     });
-    expect(config.PORT).toBe(8787);
+    expect(config.PORT).toBe(8080);
     expect(config.MODEL_CACHE_TTL_SECONDS).toBe(900);
     expect(config.SESSION_TOKEN_SAFETY_WINDOW_SECONDS).toBe(120);
-    expect(config.COPILOT_EDITOR_VERSION).toBe("vscode/1.95.0");
+    expect(config.COPILOT_EDITOR_VERSION).toBe("vscode/1.110.0");
+    expect(config.COPILOT_PLUGIN_VERSION).toBe("copilot-chat/0.38.0");
+    expect(config.COPILOT_USER_AGENT).toBe("GitHubCopilotChat/0.38.0");
     expect(config.COPILOT_INTEGRATION_ID).toBe("vscode-chat");
   });
 });

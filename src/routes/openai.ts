@@ -7,7 +7,7 @@ import {
   ResponsesStreamMachine,
   InvalidResponsesRequestError,
 } from "../translate/openai-responses.js";
-import { copilotFetch, streamCopilot, UpstreamError } from "../upstream/client.js";
+import { copilotFetch, streamCopilot, UpstreamError, SemaphoreTimeoutError, createTelemetryAccumulator, buildStealthTelemetry } from "../upstream/client.js";
 import { openrouterFetch, streamOpenRouter } from "../upstream/openrouter.js";
 import { type Initiator, deriveSessionIds } from "../upstream/headers.js";
 import { getModels, resolveModel, ModelNotFoundError } from "../upstream/models.js";
@@ -134,12 +134,13 @@ openai.post("/v1/chat/completions", async (c) => {
     sctx.streaming = !!chatReq.stream;
     logger.info({ event: "interaction", route: "/v1/chat/completions", initiator, turns, model: body.model, interactionId, agentTaskId });
 
+    const telemetry = createTelemetryAccumulator();
     const doFetch = useOpenRouter
       ? openrouterFetch
-      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId, telemetry);
     const doStream = useOpenRouter
       ? streamOpenRouter
-      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId, telemetry);
 
     if (chatReq.stream) {
       // Streaming response
@@ -189,6 +190,7 @@ openai.post("/v1/chat/completions", async (c) => {
             });
             try { controller.enqueue(encoder.encode(`data: ${errorPayload}\n\n`)); } catch { /* controller may be errored */ }
           } finally {
+            sctx.stealth = buildStealthTelemetry(telemetry);
             emitStats(sctx, { statusCode: 200, usage: lastUsage ? { prompt_tokens: lastUsage.prompt_tokens ?? 0, completion_tokens: lastUsage.completion_tokens ?? 0, total_tokens: lastUsage.total_tokens ?? 0 } : undefined, finishReason: lastFinishReason, toolCallsCount: toolCallCount });
             controller.close();
           }
@@ -212,6 +214,7 @@ openai.post("/v1/chat/completions", async (c) => {
     });
     const upstream: any = await res.json();
     const choice = upstream.choices?.[0];
+    sctx.stealth = buildStealthTelemetry(telemetry);
     emitStats(sctx, {
       statusCode: 200,
       usage: upstream.usage ? { prompt_tokens: upstream.usage.prompt_tokens ?? 0, completion_tokens: upstream.usage.completion_tokens ?? 0, total_tokens: upstream.usage.total_tokens ?? 0 } : undefined,
@@ -334,12 +337,13 @@ openai.post("/v1/responses", async (c) => {
     sctx.streaming = !!body.stream;
     logger.info({ event: "interaction", route: "/v1/responses", initiator, turns, model: body.model, interactionId, agentTaskId });
 
+    const telemetryR = createTelemetryAccumulator();
     const doFetch = useOpenRouter
       ? openrouterFetch
-      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId);
+      : (path: string, init: RequestInit) => copilotFetch(path, init, true, initiator, interactionId, agentTaskId, telemetryR);
     const doStream = useOpenRouter
       ? streamOpenRouter
-      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId);
+      : (path: string, b: unknown, signal?: AbortSignal) => streamCopilot(path, b, signal, initiator, interactionId, agentTaskId, telemetryR);
 
     if (body.stream) {
       chatBody.stream = true;
@@ -368,6 +372,7 @@ openai.post("/v1/responses", async (c) => {
             try { controller.enqueue(encoder.encode(errorPayload)); } catch { /* controller may be errored */ }
           } finally {
             const usage = machine.getUsage();
+            sctx.stealth = buildStealthTelemetry(telemetryR);
             emitStats(sctx, { statusCode: 200, usage, finishReason: machine.getFinishReason(), toolCallsCount: machine.getToolCallsCount() });
             controller.close();
           }
@@ -391,6 +396,7 @@ openai.post("/v1/responses", async (c) => {
     });
     const upstream: any = await res.json();
     const choice = upstream.choices?.[0];
+    sctx.stealth = buildStealthTelemetry(telemetryR);
     emitStats(sctx, {
       statusCode: 200,
       usage: upstream.usage ? { prompt_tokens: upstream.usage.prompt_tokens ?? 0, completion_tokens: upstream.usage.completion_tokens ?? 0, total_tokens: upstream.usage.total_tokens ?? 0 } : undefined,

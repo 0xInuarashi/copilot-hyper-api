@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import { loadConfig, getConfig } from "./config.js";
+import { initVersionSync } from "./upstream/version-sync.js";
 import { logger, isDebug, isRaw, sanitizeHeaders } from "./logger.js";
 import { proxyKeyMiddleware } from "./auth/proxy-key.js";
 import healthRoutes from "./routes/health.js";
@@ -141,13 +142,46 @@ export { app };
 // Server start (only when run directly)
 if (import.meta.main) {
   const config = loadConfig();
+
+  // Start background version sync (non-blocking)
+  if (config.VERSION_SYNC_ENABLED) {
+    initVersionSync(
+      {
+        editorVersion: config.COPILOT_EDITOR_VERSION,
+        pluginVersion: config.COPILOT_PLUGIN_VERSION,
+        userAgent: config.COPILOT_USER_AGENT,
+        copilotCoreVersion: "copilot/1.300.0",
+        githubApiVersion: "2025-04-01",
+      },
+      config.VERSION_SYNC_INTERVAL_MS,
+    ).catch(() => {
+      // Errors already logged inside initVersionSync
+    });
+  }
+
   console.log(`Starting Copilot Hyper API on port ${config.PORT}`);
 }
 
 // Bun auto-serves the default export
+const _config = (() => {
+  try { return loadConfig(); } catch { return null; }
+})();
+
+// Start version sync for Bun auto-serve path too
+if (_config?.VERSION_SYNC_ENABLED) {
+  initVersionSync(
+    {
+      editorVersion: _config.COPILOT_EDITOR_VERSION,
+      pluginVersion: _config.COPILOT_PLUGIN_VERSION,
+      userAgent: _config.COPILOT_USER_AGENT,
+      copilotCoreVersion: "copilot/1.300.0",
+      githubApiVersion: "2025-04-01",
+    },
+    _config.VERSION_SYNC_INTERVAL_MS,
+  ).catch(() => {});
+}
+
 export default {
-  port: (() => {
-    try { return loadConfig().PORT; } catch { return 8787; }
-  })(),
+  port: _config?.PORT ?? 8787,
   fetch: app.fetch,
 };

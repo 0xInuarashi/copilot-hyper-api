@@ -1,8 +1,12 @@
 import { getConfig } from "../config.js";
 import { logger, isDebug, isRaw, sanitizeHeaders } from "../logger.js";
-import { getSessionToken, invalidateSessionToken } from "../auth/session-token.js";
+import { getSessionToken, invalidateSessionToken, getTokenCircuitBreakerState } from "../auth/session-token.js";
 import { getCopilotHeaders, type Initiator } from "./headers.js";
 import { parseSSE, type SSEEvent } from "../translate/sse.js";
+import { Semaphore, SemaphoreTimeoutError } from "./semaphore.js";
+export { SemaphoreTimeoutError };
+import { orderHeaders, orderBodyFields } from "./fingerprint.js";
+import { tlsFetch, isTlsClientAvailable, getTlsProfile } from "./tls-client.js";
 
 // ─── Retry & stream guard constants ──────────────────────────────────────────
 
@@ -12,6 +16,48 @@ const STREAM_MAX_DURATION_MS = 180_000;   // 3 minutes absolute timeout
 const STREAM_MAX_CHUNKS = 50_000;
 const DEGENERATE_WINDOW = 200;            // check every N deltas
 const DEGENERATE_WHITESPACE_RATIO = 0.95; // abort if >95% whitespace
+
+// Lazy-initialized semaphore (created on first use so config is available)
+let _semaphore: Semaphore | null = null;
+function getSemaphore(): Semaphore {
+  if (!_semaphore) {
+    const config = getConfig();
+    _semaphore = new Semaphore(config.MAX_CONCURRENT_REQUESTS, config.SEMAPHORE_TIMEOUT_MS);
+  }
+  return _semaphore;
+}
+
+/**
+ * Telemetry accumulator — created per-request, passed to stats emission.
+ * Route handlers create this and pass it through to copilotFetch/streamCopilot.
+ */
+export interface TelemetryAccumulator {
+  tokenFetchMs: number | null;
+  upstreamFetchMs: number | null;
+  retryCount: number;
+  semaphoreWaitMs: number;
+}
+
+export function createTelemetryAccumulator(): TelemetryAccumulator {
+  return { tokenFetchMs: null, upstreamFetchMs: null, retryCount: 0, semaphoreWaitMs: 0 };
+}
+
+/** Build the stealth telemetry snapshot for stats emission. */
+export function buildStealthTelemetry(acc: TelemetryAccumulator | undefined) {
+  if (!acc) return null;
+  const config = getConfig();
+  return {
+    tls_fingerprint_used: config.ENABLE_TLS_FINGERPRINT && isTlsClientAvailable(),
+    tls_profile: getTlsProfile(),
+    header_ordering_applied: config.ENABLE_HEADER_ORDERING,
+    body_ordering_applied: config.ENABLE_BODY_ORDERING,
+    token_fetch_ms: acc.tokenFetchMs,
+    upstream_fetch_ms: acc.upstreamFetchMs,
+    retry_count: acc.retryCount,
+    circuit_breaker_state: getTokenCircuitBreakerState() as "closed" | "open" | "half-open",
+    semaphore_wait_ms: acc.semaphoreWaitMs,
+  };
+}
 
 function isRetryableFetchError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -38,12 +84,18 @@ export class UpstreamError extends Error {
   }
 }
 
-async function getTokenAndBase(): Promise<{ token: string; apiBase: string }> {
+async function getTokenAndBase(acc?: TelemetryAccumulator): Promise<{ token: string; apiBase: string }> {
   const config = getConfig();
+  const t0 = Date.now();
   const session = await getSessionToken(
     config.GITHUB_OAUTH_TOKEN,
     config.SESSION_TOKEN_SAFETY_WINDOW_SECONDS,
+    config.CIRCUIT_BREAKER_THRESHOLD,
+    config.CIRCUIT_BREAKER_COOLDOWN_MS,
+    config.TOKEN_REFRESH_MAX_RETRIES,
+    config.TOKEN_REFRESH_TIMEOUT_MS,
   );
+  if (acc) acc.tokenFetchMs = Date.now() - t0;
   return { token: session.token, apiBase: session.apiBase };
 }
 
@@ -54,15 +106,22 @@ export async function copilotFetch(
   initiator: Initiator = "user",
   interactionId?: string,
   agentTaskId?: string,
+  telemetry?: TelemetryAccumulator,
 ): Promise<Response> {
-  const { token, apiBase } = await getTokenAndBase();
+  const config = getConfig();
+  const { token, apiBase } = await getTokenAndBase(telemetry);
   const headers = getCopilotHeaders(token, initiator, interactionId, agentTaskId);
 
   const url = `${apiBase}${path}`;
-  const mergedHeaders = {
+  let mergedHeaders: Record<string, string> = {
     ...headers,
     ...(init.headers as Record<string, string> ?? {}),
   };
+
+  // Apply header ordering if enabled
+  if (config.ENABLE_HEADER_ORDERING) {
+    mergedHeaders = orderHeaders(mergedHeaders);
+  }
 
   if (isDebug()) {
     const logData: Record<string, unknown> = {
@@ -77,10 +136,17 @@ export async function copilotFetch(
     logger.debug(logData);
   }
 
-  const res = await fetch(url, {
-    ...init,
-    headers: mergedHeaders,
-  });
+  // Wrap the actual fetch in the semaphore
+  const doFetch = async () => {
+    const fetchFn = config.ENABLE_TLS_FINGERPRINT ? tlsFetch : fetch;
+    const t0 = Date.now();
+    const res = await fetchFn(url, { ...init, headers: mergedHeaders });
+    if (telemetry) telemetry.upstreamFetchMs = Date.now() - t0;
+    return res;
+  };
+
+  const { result: res, waitMs } = await getSemaphore().run(doFetch);
+  if (telemetry) telemetry.semaphoreWaitMs = waitMs;
 
   if (isDebug()) {
     const resHeaders = Object.fromEntries(res.headers.entries());
@@ -93,10 +159,10 @@ export async function copilotFetch(
   }
 
   if (res.status === 401 && retryOn401) {
-    const config = getConfig();
     logger.debug({ event: "session_token_invalidate", reason: "upstream 401" });
     invalidateSessionToken(config.GITHUB_OAUTH_TOKEN);
-    return copilotFetch(path, init, false, initiator, interactionId, agentTaskId);
+    if (telemetry) telemetry.retryCount++;
+    return copilotFetch(path, init, false, initiator, interactionId, agentTaskId, telemetry);
   }
 
   if (!res.ok && res.status !== 401) {
@@ -123,20 +189,35 @@ export async function* streamCopilot(
   initiator: Initiator = "user",
   interactionId?: string,
   agentTaskId?: string,
+  telemetry?: TelemetryAccumulator,
 ): AsyncIterable<SSEEvent> {
-  let currentHeaders = getCopilotHeaders(
-    (await getTokenAndBase()).token, initiator, interactionId, agentTaskId,
-  );
-  const apiBase = (await getTokenAndBase()).apiBase;
+  const config = getConfig();
+  const { token, apiBase } = await getTokenAndBase(telemetry);
+  let currentHeaders = getCopilotHeaders(token, initiator, interactionId, agentTaskId);
+
+  // Apply header ordering
+  if (config.ENABLE_HEADER_ORDERING) {
+    currentHeaders = orderHeaders({ ...currentHeaders, Accept: "text/event-stream" }) as Record<string, string>;
+  } else {
+    currentHeaders = { ...currentHeaders, Accept: "text/event-stream" };
+  }
+
   const url = `${apiBase}${path}`;
-  const bodyStr = JSON.stringify(body);
+
+  // Apply body field ordering
+  let bodyStr: string;
+  if (config.ENABLE_BODY_ORDERING && body && typeof body === "object" && !Array.isArray(body)) {
+    bodyStr = orderBodyFields(body as Record<string, unknown>);
+  } else {
+    bodyStr = JSON.stringify(body);
+  }
 
   if (isDebug()) {
     const logData: Record<string, unknown> = {
       event: "upstream_stream_request",
       url,
       method: "POST",
-      headers: sanitizeHeaders({ ...currentHeaders, Accept: "text/event-stream" }),
+      headers: sanitizeHeaders(currentHeaders),
     };
     if (isRaw()) {
       logData.body_raw = bodyStr;
@@ -146,27 +227,45 @@ export async function* streamCopilot(
 
   // ── Fix 1: Retry fetch with exponential backoff ────────────────────────────
   let res: Response | undefined;
+  const fetchFn = config.ENABLE_TLS_FINGERPRINT ? tlsFetch : fetch;
   for (let attempt = 0; attempt <= STREAM_FETCH_MAX_RETRIES; attempt++) {
     try {
       logger.debug({ event: "upstream_stream_fetch_start", url, attempt });
-      res = await fetch(url, {
-        method: "POST",
-        headers: { ...currentHeaders, Accept: "text/event-stream" },
-        body: bodyStr,
-        signal,
+
+      // Wrap in semaphore
+      const { result: fetchRes, waitMs } = await getSemaphore().run(async () => {
+        const t0 = Date.now();
+        const r = await fetchFn(url, {
+          method: "POST",
+          headers: currentHeaders,
+          body: bodyStr,
+          signal,
+        });
+        if (telemetry) telemetry.upstreamFetchMs = Date.now() - t0;
+        return r;
       });
+      if (telemetry) telemetry.semaphoreWaitMs = waitMs;
+
+      res = fetchRes;
       logger.debug({ event: "upstream_stream_fetch_done", url, status: res.status, attempt });
       break; // success
     } catch (fetchErr) {
       logger.error({ event: "upstream_stream_fetch_error", url, attempt, error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr) });
+      if (telemetry) telemetry.retryCount = attempt + 1;
 
       if (attempt < STREAM_FETCH_MAX_RETRIES && isRetryableFetchError(fetchErr) && !signal?.aborted) {
         const delay = STREAM_FETCH_INITIAL_DELAY_MS * Math.pow(2, attempt);
         logger.info({ event: "upstream_stream_fetch_retry", url, attempt: attempt + 1, delay_ms: delay });
         await new Promise(r => setTimeout(r, delay));
         // Refresh token in case it expired during the wait
-        const fresh = await getTokenAndBase();
-        currentHeaders = getCopilotHeaders(fresh.token, initiator, interactionId, agentTaskId);
+        const fresh = await getTokenAndBase(telemetry);
+        let refreshed = getCopilotHeaders(fresh.token, initiator, interactionId, agentTaskId);
+        if (config.ENABLE_HEADER_ORDERING) {
+          refreshed = orderHeaders({ ...refreshed, Accept: "text/event-stream" }) as Record<string, string>;
+        } else {
+          refreshed = { ...refreshed, Accept: "text/event-stream" };
+        }
+        currentHeaders = refreshed;
         continue;
       }
       throw fetchErr;

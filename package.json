@@ -9,6 +9,7 @@
     "dev-raw": "LOG_LEVEL=raw bun --watch src/index.ts",
     "login": "bun run src/cli/login.ts",
     "stats": "bun run src/cli/stats.ts",
+    "audit": "bun run src/cli/dynamic-info-audit.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/ test/",
     "test": "bun test",
@@ -27,6 +28,9 @@
     "hono": "^4.6.0",
     "zod": "^3.23.0",
     "nanoid": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "wreq-js": "^0.3.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

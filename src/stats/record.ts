@@ -23,6 +23,17 @@ export interface StatsContext {
     judge_latency_ms: number;
     cached: boolean;
   } | null;
+  stealth?: {
+    tls_fingerprint_used: boolean;
+    tls_profile: string | null;
+    header_ordering_applied: boolean;
+    body_ordering_applied: boolean;
+    token_fetch_ms: number | null;
+    upstream_fetch_ms: number | null;
+    retry_count: number;
+    circuit_breaker_state: "closed" | "open" | "half-open";
+    semaphore_wait_ms: number;
+  } | null;
 }
 
 function inferTier(model: string): "free" | "paid" | "premium" | "unknown" {
@@ -63,6 +74,7 @@ export function emitStats(
     finish_reason: result.finishReason ?? null,
     tool_calls_count: result.toolCallsCount ?? 0,
     auto_route: ctx.autoRoute ?? null,
+    stealth: ctx.stealth ?? null,
     error: result.error ?? null,
   };
 
