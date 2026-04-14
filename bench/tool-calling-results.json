@@ -1,0 +1,170 @@
+[
+  {
+    "model": "gpt-4.1",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 646.5568480909053,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  },
+  {
+    "model": "gpt-4",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 702.0182081818162,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  },
+  {
+    "model": "gpt-4o",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 972.514296818182,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  },
+  {
+    "model": "gpt-3.5-turbo",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 1090.0871930909025,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  },
+  {
+    "model": "gpt-4o-mini",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 1188.0529141818195,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  },
+  {
+    "model": "oswe-vscode-prime",
+    "totalCases": 11,
+    "passed": 11,
+    "failed": 0,
+    "accuracy": 1,
+    "toolSelectionAccuracy": 1,
+    "avgParamScore": 1,
+    "avgLatencyMs": 1228.857426090909,
+    "byDifficulty": {
+      "easy": {
+        "passed": 3,
+        "total": 3,
+        "accuracy": 1
+      },
+      "medium": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      },
+      "hard": {
+        "passed": 4,
+        "total": 4,
+        "accuracy": 1
+      }
+    },
+    "failures": []
+  }
+]
