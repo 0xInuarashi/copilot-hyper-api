@@ -150,10 +150,15 @@ openai.post("/v1/chat/completions", async (c) => {
 
       const readableStream = new ReadableStream({
         async start(controller) {
+          let sentDone = false;
           try {
+            let streamChunks = 0;
             for await (const event of doStream("/chat/completions", chatReq, c.req.raw.signal)) {
+              streamChunks++;
               if (event.data === "[DONE]") {
                 controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+                sentDone = true;
+                logger.debug({ event: "chat_stream_done", request_id: requestId, chunks: streamChunks });
                 break;
               }
               try {
@@ -169,8 +174,20 @@ openai.post("/v1/chat/completions", async (c) => {
               } catch {}
               controller.enqueue(encoder.encode(`data: ${event.data}\n\n`));
             }
+            // Fix 2: If upstream ended without [DONE] (timeout/degenerate break), synthesize it
+            if (!sentDone) {
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              sentDone = true;
+              logger.debug({ event: "chat_stream_done_synthetic", request_id: requestId });
+            }
           } catch (err) {
-            // Stream error
+            // Fix 4: Emit SSE error event so the client can detect the failure
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.error({ event: "chat_stream_error", request_id: requestId, error: err instanceof Error ? `${err.name}: ${errMsg}` : errMsg });
+            const errorPayload = JSON.stringify({
+              error: { message: `Upstream stream failed: ${errMsg}`, type: "upstream_stream_error", code: "stream_error" },
+            });
+            try { controller.enqueue(encoder.encode(`data: ${errorPayload}\n\n`)); } catch { /* controller may be errored */ }
           } finally {
             emitStats(sctx, { statusCode: 200, usage: lastUsage ? { prompt_tokens: lastUsage.prompt_tokens ?? 0, completion_tokens: lastUsage.completion_tokens ?? 0, total_tokens: lastUsage.total_tokens ?? 0 } : undefined, finishReason: lastFinishReason, toolCallsCount: toolCallCount });
             controller.close();
@@ -345,7 +362,10 @@ openai.post("/v1/responses", async (c) => {
               }
             }
           } catch (err) {
-            // Stream error
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.error({ event: "responses_stream_error", request_id: requestId, error: errMsg });
+            const errorPayload = `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "upstream_stream_error", message: errMsg } })}\n\n`;
+            try { controller.enqueue(encoder.encode(errorPayload)); } catch { /* controller may be errored */ }
           } finally {
             const usage = machine.getUsage();
             emitStats(sctx, { statusCode: 200, usage, finishReason: machine.getFinishReason(), toolCallsCount: machine.getToolCallsCount() });

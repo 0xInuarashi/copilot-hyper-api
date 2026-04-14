@@ -170,7 +170,10 @@ async function handleMessages(c: any) {
               }
             }
           } catch (err) {
-            // Stream error
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.error({ event: "anthropic_stream_error", request_id: requestId, error: errMsg });
+            const errorPayload = `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "upstream_stream_error", message: errMsg } })}\n\n`;
+            try { controller.enqueue(encoder.encode(errorPayload)); } catch { /* controller may be errored */ }
           } finally {
             const usage = machine.getUsage();
             emitStats(sctx, { statusCode: 200, usage, finishReason: machine.getFinishReason(), toolCallsCount: machine.getToolCallsCount() });
