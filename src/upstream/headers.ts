@@ -126,7 +126,6 @@ export function getCopilotHeaders(
     "X-Agent-Task-Id": agentTaskId ?? crypto.randomUUID(),
     "X-Client-Session-Id": CLIENT_SESSION_ID,
     "X-Client-Machine-Id": CLIENT_MACHINE_ID,
-    "x-github-api-version": v.githubApiVersion,
     "x-vscode-user-agent-library-version": "undici",
   };
 }

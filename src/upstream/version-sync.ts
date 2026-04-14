@@ -19,7 +19,7 @@ export interface ResolvedVersions {
   pluginVersion: string;   // "copilot-chat/0.38.0"
   userAgent: string;       // "GitHubCopilotChat/0.38.0"
   copilotCoreVersion: string; // "copilot/1.300.0" (for token refresh)
-  githubApiVersion: string;   // "2026-03-10" (x-github-api-version header)
+  githubApiVersion: string;   // "2022-11-28" (x-github-api-version header)
 }
 
 interface CachedVersions {
@@ -40,7 +40,7 @@ let _defaults: ResolvedVersions = {
   pluginVersion: "copilot-chat/0.38.0",
   userAgent: "GitHubCopilotChat/0.38.0",
   copilotCoreVersion: "copilot/1.300.0",
-  githubApiVersion: "2025-04-01",
+  githubApiVersion: "2022-11-28",
 };
 
 // ── Marketplace fetch ───────────────────────────────────────────────────────
@@ -133,13 +133,16 @@ async function fetchLatestGitHubApiVersion(): Promise<string | null> {
 // ── Sync logic ──────────────────────────────────────────────────────────────
 
 async function doSync(defaults: ResolvedVersions): Promise<ResolvedVersions> {
-  const [vscodeVersion, copilotChatVersion, copilotCoreVersion, ghApiVersion] =
+  const [vscodeVersion, copilotChatVersion, copilotCoreVersion] =
     await Promise.all([
       fetchVSCodeVersion(),
       fetchMarketplaceVersion("GitHub.copilot-chat"),
       fetchMarketplaceVersion("GitHub.copilot"),
-      fetchLatestGitHubApiVersion(),
     ]);
+  // Note: GitHub API version is NOT synced from api.github.com/versions.
+  // That endpoint lists versions for the main GitHub API, not the Copilot API.
+  // The Copilot API uses its own versioning and rejects unsupported versions with 400.
+  const ghApiVersion = null;
 
   const resolved: ResolvedVersions = { ...defaults };
 

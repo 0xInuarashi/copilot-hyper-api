@@ -145,7 +145,7 @@ async function runAudit(): Promise<AuditEntry[]> {
       pluginVersion: config.COPILOT_PLUGIN_VERSION,
       userAgent: config.COPILOT_USER_AGENT,
       copilotCoreVersion: "copilot/1.300.0",
-      githubApiVersion: "2025-04-01",
+      githubApiVersion: "2022-11-28",
     },
     86_400_000,
   );

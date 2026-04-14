@@ -151,7 +151,7 @@ if (import.meta.main) {
         pluginVersion: config.COPILOT_PLUGIN_VERSION,
         userAgent: config.COPILOT_USER_AGENT,
         copilotCoreVersion: "copilot/1.300.0",
-        githubApiVersion: "2025-04-01",
+        githubApiVersion: "2022-11-28",
       },
       config.VERSION_SYNC_INTERVAL_MS,
     ).catch(() => {
@@ -175,7 +175,7 @@ if (_config?.VERSION_SYNC_ENABLED) {
       pluginVersion: _config.COPILOT_PLUGIN_VERSION,
       userAgent: _config.COPILOT_USER_AGENT,
       copilotCoreVersion: "copilot/1.300.0",
-      githubApiVersion: "2025-04-01",
+      githubApiVersion: "2022-11-28",
     },
     _config.VERSION_SYNC_INTERVAL_MS,
   ).catch(() => {});
