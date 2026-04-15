@@ -22,12 +22,14 @@ export interface NormalizedModel {
 
 interface ModelCache {
   models: NormalizedModel[];
+  rawModels: any[];
   fetchedAt: number;
   fetchPromise: Promise<NormalizedModel[]> | null;
 }
 
 let modelCache: ModelCache = {
   models: [],
+  rawModels: [],
   fetchedAt: 0,
   fetchPromise: null,
 };
@@ -66,6 +68,7 @@ async function fetchModels(): Promise<NormalizedModel[]> {
   const res = await copilotFetch("/models", { method: "GET" }, true);
   const data = (await res.json()) as { data?: any[]; models?: any[] };
   const rawModels = data.data ?? data.models ?? [];
+  modelCache.rawModels = rawModels;
   return rawModels.map(normalizeModel);
 }
 
@@ -98,7 +101,13 @@ export async function getModels(forceRefresh = false): Promise<NormalizedModel[]
   return modelCache.fetchPromise;
 }
 
-export function resolveModel(models: NormalizedModel[], requestedModel: string): NormalizedModel {
+export async function getRawModels(forceRefresh = false): Promise<any[]> {
+  await getModels(forceRefresh);
+  return modelCache.rawModels;
+}
+
+export function resolveModel(
+  models: NormalizedModel[], requestedModel: string): NormalizedModel {
   // Direct match
   const exact = models.find((m) => m.id === requestedModel);
   if (exact) return exact;
@@ -178,5 +187,5 @@ export function getAnthropicModelList(models: NormalizedModel[]) {
 }
 
 export function clearModelCache(): void {
-  modelCache = { models: [], fetchedAt: 0, fetchPromise: null };
+  modelCache = { models: [], rawModels: [], fetchedAt: 0, fetchPromise: null };
 }

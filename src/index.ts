@@ -114,6 +114,7 @@ app.route("/", healthRoutes);
 // Auth middleware for API routes
 app.use("/v1/*", proxyKeyMiddleware("openai"));
 app.use("/anthropic/*", proxyKeyMiddleware("anthropic"));
+app.use("/models", proxyKeyMiddleware("openai"));
 app.use("/stats*", proxyKeyMiddleware("openai"));
 
 // API routes
